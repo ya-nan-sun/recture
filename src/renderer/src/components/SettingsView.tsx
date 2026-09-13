@@ -58,7 +58,6 @@ export function SettingsView({
     }
   }
 
-  const batch = providers.find((p) => p.id === settings.batchProvider)
   const cloudInUse = settings.liveProvider === 'deepgram-live' || settings.batchProvider === 'deepgram-batch'
 
   return (
@@ -179,23 +178,38 @@ export function SettingsView({
 
       <h2>Transcription</h2>
       <div className="card">
-        <label htmlFor="batch">Final transcript (the one that is saved)</label>
-        <select
-          id="batch"
-          value={settings.batchProvider}
-          onChange={(e) => void patch({ batchProvider: e.target.value as BatchProviderId })}
-        >
-          <option value="whisper-local">faster-whisper — on this device</option>
-          <option value="deepgram-batch">Deepgram — cloud batch</option>
-        </select>
-        {batch && (
-          <div className="faint" style={{ marginTop: 8 }}>
-            <span className={batch.available ? 'chip ok' : 'chip warn'}>
-              {batch.available ? 'Ready' : 'Unavailable'}
-            </span>{' '}
-            {batch.detail}
-          </div>
-        )}
+        <label id="batch-label">Final transcript (the one that is saved)</label>
+        <div className="provider-options" role="radiogroup" aria-labelledby="batch-label">
+          <ProviderOption
+            id="whisper-local"
+            selected={settings.batchProvider === 'whisper-local'}
+            title="On this computer"
+            subtitle="Python · faster-whisper. Free, and nothing is uploaded."
+            availability={providers.find((p) => p.id === 'whisper-local')}
+            onSelect={(id) => void patch({ batchProvider: id })}
+          >
+            <label htmlFor="whisper-model">Whisper model</label>
+            <select
+              id="whisper-model"
+              value={settings.whisperModel}
+              onChange={(e) => void patch({ whisperModel: e.target.value })}
+            >
+              {['tiny.en', 'base.en', 'small.en', 'medium.en', 'large-v3'].map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </ProviderOption>
+          <ProviderOption
+            id="deepgram-batch"
+            selected={settings.batchProvider === 'deepgram-batch'}
+            title="Deepgram"
+            subtitle="Cloud. Ready in minutes; the recording is uploaded after you stop."
+            availability={providers.find((p) => p.id === 'deepgram-batch')}
+            onSelect={(id) => void patch({ batchProvider: id })}
+          />
+        </div>
 
         <div style={{ marginTop: 14 }}>
           <label htmlFor="live">Live draft while recording</label>
@@ -209,32 +223,16 @@ export function SettingsView({
           </select>
         </div>
 
-        <div className="grid-2" style={{ marginTop: 14 }}>
-          <div>
-            <label htmlFor="whisper-model">Whisper model</label>
-            <select
-              id="whisper-model"
-              value={settings.whisperModel}
-              onChange={(e) => void patch({ whisperModel: e.target.value })}
-            >
-              {['tiny.en', 'base.en', 'small.en', 'medium.en', 'large-v3'].map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label htmlFor="segment">Segment length (seconds)</label>
-            <input
-              id="segment"
-              type="number"
-              min={10}
-              max={300}
-              value={settings.segmentSeconds}
-              onChange={(e) => void patch({ segmentSeconds: Math.max(10, Number(e.target.value) || 45) })}
-            />
-          </div>
+        <div style={{ marginTop: 14 }}>
+          <label htmlFor="segment">Segment length (seconds)</label>
+          <input
+            id="segment"
+            type="number"
+            min={10}
+            max={300}
+            value={settings.segmentSeconds}
+            onChange={(e) => void patch({ segmentSeconds: Math.max(10, Number(e.target.value) || 45) })}
+          />
         </div>
         <div className="faint" style={{ marginTop: 8 }}>
           Shorter segments bound how much audio a crash can cost, at the price of more files per lecture.
@@ -303,6 +301,58 @@ export function SettingsView({
           onToast={onToast}
         />
       </div>
+    </div>
+  )
+}
+
+/**
+ * One way of making the final transcript, as a selectable option. Options that
+ * need configuring (the Whisper model) carry it inside, below the header; a
+ * control cannot sit inside the button itself.
+ */
+function ProviderOption({
+  id,
+  selected,
+  title,
+  subtitle,
+  availability,
+  onSelect,
+  children
+}: {
+  id: BatchProviderId
+  selected: boolean
+  title: string
+  subtitle: string
+  availability?: ProviderAvailability
+  onSelect: (id: BatchProviderId) => void
+  children?: ReactNode
+}): ReactNode {
+  return (
+    <div className={`provider-option${selected ? ' selected' : ''}`}>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={selected}
+        className="provider-option-main"
+        onClick={() => {
+          if (!selected) onSelect(id)
+        }}
+      >
+        <span className="row" style={{ gap: 8, width: '100%' }}>
+          <strong>{title}</strong>
+          <span className="spacer" />
+          {availability && (
+            <span className={availability.available ? 'chip ok' : 'chip warn'}>
+              {availability.available ? 'Ready' : 'Unavailable'}
+            </span>
+          )}
+        </span>
+        <span className="faint">{subtitle}</span>
+        {availability && !availability.available && (
+          <span className="faint provider-option-detail">{availability.detail}</span>
+        )}
+      </button>
+      {children && <div className="provider-option-extra">{children}</div>}
     </div>
   )
 }
