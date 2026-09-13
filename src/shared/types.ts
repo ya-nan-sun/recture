@@ -293,6 +293,8 @@ export interface AppSettings {
   transcriptFontSize: number
   /** The playback speed last chosen for lectures. */
   playbackRate: number
+  /** First-run setup was finished or put off. */
+  setupComplete: boolean
 }
 
 export type ThemeSetting = 'system' | 'dark' | 'light'

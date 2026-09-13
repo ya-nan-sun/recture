@@ -4,9 +4,9 @@ Record lectures. Get accurate, searchable transcripts, organised by class.
 
 Recture is a desktop app for students. Press record when the professor starts
 talking; when the lecture ends you get a searchable, timestamped transcript you can
-export to Markdown or PDF. It's built for the reality of a lecture hall — a laptop
-microphone, background noise, echo, accents, and vocabulary no ordinary
-transcription app has heard of.
+correct, search, and export to Markdown, PDF, Word, subtitles and more. It's built for
+the reality of a lecture hall — a laptop microphone, background noise, echo, accents,
+and vocabulary no ordinary transcription app has heard of.
 
 Your recordings are ordinary files in an ordinary folder. Transcription runs either
 entirely on your own computer for free, or in the cloud for speed — your choice, and
@@ -17,7 +17,8 @@ the app is explicit about which one sends your audio anywhere.
 - [How it works](#how-it-works) — the two-pass design, in one diagram
 - [Your options](#your-options) — **free vs paid**, speed vs accuracy
 - [Install](#install) — the app, Python support, Deepgram key
-- [Using it](#using-it) — from class to exported transcript
+- [Using it](#using-it) — from class to transcript
+- [Reading and exporting](#reading-and-exporting) — corrections, search, formats
 - [Your files](#your-files) — where recordings live
 - [If something breaks](#if-something-breaks)
 
@@ -26,8 +27,9 @@ the app is explicit about which one sends your audio anywhere.
 ## How it works
 
 ```
-  🎙  YOU RECORD
-      │
+  🎙  YOU RECORD                      📁  OR IMPORT A FILE
+      │                                   phone memo · Zoom · Panopto
+      │                                        │
       │   audio is saved to your disk in chunks, continuously
       │   ── always local ── always free ── never uploaded ──
       │
@@ -80,10 +82,10 @@ along. The final transcript is the real one.
 ```
   FREE FOREVER                        COSTS MONEY
   ────────────                        ───────────
-  Recording                           Live draft      (Deepgram)
+  Recording and importing             Live draft      (Deepgram)
   Storage                             Cloud transcript(Deepgram)
   Transcribing on your computer
-  Exports, search, glossary           New accounts get $200 free credit
+  Corrections, search, exports        New accounts get $200 free credit
                                       ≈ 120+ three-hour lectures
                                       After that: ~$36–76 / semester
 ```
@@ -100,7 +102,8 @@ along. The final transcript is the real one.
   Deepgram  ▓                   ~2–4 min   mostly upload time
 ```
 
-Runs in the background — keep using your laptop, or start another recording.
+Runs in the background, one lecture at a time — keep using your laptop, or record
+the next lecture straight away.
 
 ---
 
@@ -113,11 +116,13 @@ Download `Recture Setup.exe` from [Releases](../../releases) and run it.
 > Windows shows **"Windows protected your PC"** — expected, the app isn't signed
 > with a paid certificate. Click **More info → Run anyway**.
 
-**2. Choose your transcription setup**
+The first launch asks which of the four setups above you want.
+
+**2. Get what your setup needs**
 
 ```
   Want it free and private?          → install Python support (below)
-  Want live text while recording?    → get a Deepgram key (below)
+  Want live text or cloud speed?     → get a Deepgram key (below)
   Want both?                         → do both
 ```
 
@@ -128,14 +133,14 @@ pip install faster-whisper
 ```
 
 Install [Python](https://www.python.org/downloads/) first if needed — tick
-**"Add Python to PATH"**. First recording downloads the speech model (~1.5 GB, once).
+**"Add Python to PATH"**. The first transcription downloads the speech model (~1.5 GB, once).
 
 **Deepgram key** (for live text or cloud transcription):
 
 Sign up at [deepgram.com](https://deepgram.com) — $200 free credit, no card.
 Paste the key into **Settings → Deepgram API key**.
 
-Settings tells you whether each option is **Ready** and what's missing if not.
+The record screen warns you **before** you record if your setup isn't ready.
 
 ---
 
@@ -144,17 +149,50 @@ Settings tells you whether each option is **Ready** and what's missing if not.
 ```
   1. Create a class                      +  in the sidebar
   2. Add course vocabulary               Glossary tab   ← biggest accuracy win
-  3. Test your mic                       Test microphone
+  3. Test your mic                       Mic check · the mic you pick is the one used
   4. Record                              button, or Ctrl+Shift+R from any app
-  5. Stop                                transcript appears in a few minutes
+       ★ flag a moment                   Alt+Shift+B, even from another app
+       ⏸ pause for a break               Pause / Resume
+  5. Stop                                transcribes in the background
   6. Review flagged terms                Accept / Reject
-  7. Export                              Markdown · PDF · clipboard
 ```
+
+**Already recorded it somewhere else?** Click **Import recording…** or drop audio or
+video files onto a class.
 
 **Glossary** = `eigenvalue`, `Nyquist`, your professor's name. These are fed to the
 speech engine as hints, *and* used afterwards to flag likely mishearings. The app
-only ever **suggests** — it can't invent words or rewrite sentences, and nothing
-changes until you click Accept.
+only ever **suggests** — nothing changes until you click Accept.
+
+**While you record**, Recture keeps the laptop awake, and warns you if the mic goes
+silent or disconnects, or if disk space or battery run low.
+
+---
+
+## Reading and exporting
+
+```
+  Double-click a sentence        fix a word (the original is kept, so you can undo)
+  Search, in the sidebar         every lecture · opens at the moment it was said
+  Ctrl+F                         find in this lecture
+  Outline                        a section every 5 minutes, plus your bookmarks
+  Hide "um" and "uh"             easier reading · the word-for-word record is kept
+  Speakers                       rename "Speaker 1" to your professor's name
+  Space · ← → · [ ]              play/pause · skip 5 s · slower/faster
+```
+
+| Export | Good for |
+|---|---|
+| Markdown | Obsidian, Notion, OneNote |
+| PDF | printing and annotating |
+| Word | editing in Word, Google Docs, Pages |
+| Plain text | anywhere |
+| Subtitles (SRT / WebVTT) | captions on the recording |
+| Spreadsheet (CSV) | Excel or Sheets, one row per sentence |
+| JSON | scripts and other tools |
+
+Export one lecture from its page, or a whole class from **Export…** on the class —
+as one file, or a file per lecture.
 
 ---
 
@@ -165,12 +203,12 @@ Ordinary folders. Back them up, sync them, rearrange them — the app follows al
 ```
 Documents\Recture\Classes\
 └── CS 4501 Machine Learning\
-    ├── glossary.json              your course vocabulary
+    ├── glossary.json                    your course vocabulary
     └── 2026-09-12 - Week 3\
-        ├── audio\                 the recording (one file once transcribed)
-        ├── transcript.json        the master copy
-        ├── transcript.md          exports
-        └── transcript.pdf
+        ├── audio\                       the recording (one file once transcribed)
+        ├── transcript.json              the master copy, corrections included
+        ├── bookmarks.json               moments you flagged
+        └── transcript.md · .pdf · .docx exports you saved here
 ```
 
 **~115 MB per hour**, or **~15 MB** with compressed storage (Settings). A 10 hrs/week semester ≈ 18 GB, or ≈ 2.5 GB compressed.
@@ -185,10 +223,12 @@ one from backup — it shows up in the app within seconds.
 | Problem | Fix |
 |---|---|
 | "faster-whisper is not installed" | Re-run `pip install faster-whisper` |
-| Recording won't start | Check Windows mic permissions |
+| "No sound picked up" while recording | Mic muted, or wrong mic — pick it in **Mic check** |
+| Laptop went to sleep mid-lecture | Everything up to then is saved — press **Resume** |
 | App crashed mid-lecture | Reopen — recording is repaired automatically |
 | Transcription failed | Audio is safe → **Retry transcription** |
 | "Needs attention" | Part of the audio failed its integrity check; the rest is fine |
+| Deepgram key asked for again | Paste it once more in **Settings** (it couldn't carry over from LectureRec) |
 | App doesn't match my folders | **Sync with disk** in the sidebar |
 
 **Your recording survives all of these.** Audio is written continuously and

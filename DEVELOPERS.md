@@ -19,18 +19,29 @@ npm start            # run the built app
 ### Verification
 
 ```bash
-npm test             # 80 unit tests (pure logic: audio, correction, exports)
-npm run smoke        # 54 integration checks, run inside Electron
+npm run typecheck    # main/preload/tests and renderer, separately
+npm test             # unit and component tests (vitest; jsdom for React components)
+npm run smoke        # integration checks, run inside Electron
 ```
 
 The split exists for a concrete reason: `better-sqlite3` is compiled against **Electron's** ABI, so
 the plain-Node test runner cannot load it. Anything touching SQLite is therefore exercised by
-`npm run smoke`, which boots a real Electron process, writes real audio, and runs the real pipeline
-against a stubbed transcription provider. It covers recording, checksums, assembly, corruption
-handling, failed-transcription recovery, crash recovery, exports, rename/move/delete, and
-disk↔index reconciliation (including a full rebuild after wiping the database).
+`npm run smoke`, which boots a real Electron process, writes real audio, runs real ffmpeg, and runs
+the real pipeline against a stubbed transcription provider. `src/main/devSmoke*.ts` cover:
 
-## Transcription providers
+| File | Covers |
+| --- | --- |
+| `devSmoke.ts` | recording, checksums, assembly, corruption, failed and interrupted passes, crash recovery, exports, rename/move/delete, disk↔index reconciliation including a full rebuild |
+| `devSmokePipeline.ts` | the transcription queue, back-to-back recording, quitting mid-pass and resuming, recording into an existing lecture, pause, bookmarks, cancelling |
+| `devSmokeCapture.ts` | keeping the system awake, saving the open segment on suspend, disk space, persisted settings |
+| `devSmokeImport.ts` | importing files, compacting audio after transcription, Opus storage, retry, rebuild from disk, damaged archives, cancelled and failed imports |
+| `devSmokeReading.ts` | search by moment, renames keeping lectures searchable, hand edits and speaker names under concurrency, bookmarks in exports, index upgrade |
+| `devSmokeExports.ts` | every export format from real lectures, class exports as one file and as a folder |
+
+Run the smoke build directly with `SMOKE_OUT=smoke.txt electron out/main/devSmoke.js`. Make sure
+`ELECTRON_RUN_AS_NODE` is not set in your shell, or Electron starts as plain Node and fails.
+
+## Transcription
 
 Two passes, by design:
 
@@ -43,6 +54,11 @@ The live draft is never the source of truth. When recording stops, the complete 
 re-transcribed and that result replaces the draft. If the final pass fails after retries, the draft
 is kept as a clearly-labelled fallback and the lecture is marked **needs transcription** — the audio
 is never discarded.
+
+Final passes run in a one-at-a-time queue (`src/main/transcription/queue.ts`) that is independent of
+recording, so the next lecture can be recorded while the previous one transcribes. Quitting aborts
+the running pass (the Python process is killed) and the lecture resumes on the next launch. Local
+transcription runs below normal priority so it cannot starve a recording in progress.
 
 ### Local final pass (default — no audio leaves the device)
 
@@ -67,19 +83,17 @@ The files are the source of truth. The SQLite database is an index over them and
   class.json
   <YYYY-MM-DD - Title>/
     lecture.json
+    bookmarks.json         moments flagged while recording or listening back
     audio/
       segments.json        manifest: checksums for everything below
       segment-0001.wav …   while recording: rolling segments, each checksummed at write time
       lecture-<hash>.wav   once transcribed: the whole lecture in one checksummed file
                            (lecture-<hash>.opus with compressed storage)
-    transcript.json        source of truth for every export
+    transcript.json        source of truth: text, suggestions, hand edits, speaker names
     transcript.live.json   live draft, kept only as a fallback
-    transcript.md
-    transcript.pdf
+    transcript.md|pdf|docx|txt|srt|vtt|csv, transcript.export.json
+                           exports saved into the lecture folder
 ```
-
-Markdown, PDF and clipboard output are all generated from `transcript.json`, so they cannot drift
-apart.
 
 ## How the audio pipeline protects a lecture
 
@@ -92,6 +106,13 @@ apart.
   file is never deleted.
 - If the app dies mid-lecture, the next launch repairs the partially-written segment (truncating to
   a whole sample frame) and marks the lecture ready to transcribe.
+- Recording into a lecture that already has audio continues its timeline and numbering; pausing
+  finalizes and checksums the open segment first.
+- While recording, a power-save blocker keeps the system awake. If it sleeps anyway, the recording
+  is paused (flushing the open segment) before suspend and is not resumed automatically on wake.
+  See `src/main/powerGuard.ts`.
+- The renderer watches input levels and warns about a silent or disconnected microphone
+  (`src/shared/silence.ts`), and about low disk space and battery (`src/shared/readiness.ts`).
 - Once a lecture is transcribed its segments are redundant, since the assembled WAV holds every
   sample. They are folded into one `lecture-<hash>.wav` (or `.opus`, if Settings says to compress),
   whose checksum goes into `segments.json` before anything is deleted. A lecture with any damaged
@@ -114,6 +135,25 @@ lecture's audio and never deletes a file.
 Removing something from the library while keeping its files writes a `.recture-ignore` marker into
 the folder, so the scanner skips it — otherwise the watcher would re-adopt it within seconds and
 "remove from library" would be a no-op. Deleting that marker re-admits the folder.
+
+## Transcripts, search and exports
+
+- **One text pipeline.** `src/shared/transcript.ts` turns `transcript.json` into what the student
+  reads: accepted corrections applied, hesitations optionally removed (conservatively — "like" and
+  "you know" are never touched), speakers named, and paragraphs broken at pauses and sentence ends.
+  The lecture view and every export use it, so they cannot disagree.
+- **Hand edits** replace a segment's text and keep the original words and glossary suggestions on
+  the segment, so an edit can be undone exactly. All writes to `transcript.json` go through
+  `src/main/transcriptStore.ts`, which serializes them per lecture; changes are refused while a pass
+  that would replace the transcript is queued or running.
+- **Search** (schema v2) indexes each lecture and each passage with its start time in SQLite FTS5,
+  so results open the lecture at the moment the words were said. Transcripts indexed before v2 are
+  re-indexed from disk at startup. Snippet matches are delimited with `char(2)`/`char(3)` and split
+  in the renderer, never rendered as HTML.
+- **Exports** (`src/shared/exportFormats.ts`, `src/main/export/`): Markdown, PDF (pdf-lib), Word
+  (OOXML parts zipped with fflate), plain text, SRT, WebVTT, CSV and JSON — for one lecture, or a
+  class as one file or a folder of files. Exports into a lecture folder never overwrite
+  `transcript.json`, and files are written through a temporary file.
 
 ## Glossary and corrections
 
@@ -148,7 +188,7 @@ exists on the better-sqlite3 releases page first.
 ## Giving the app to someone else
 
 ```bash
-npm run dist        # -> release/Recture Setup 0.1.0.exe  (~124 MB)
+npm run dist        # -> release/Recture Setup <version>.exe
 ```
 
 Electron is bundled, so the recipient does **not** need Node, npm, or this repo. They run the
@@ -169,12 +209,13 @@ already configured.
    - run `pip install faster-whisper` (first transcription then downloads the model), **or**
    - switch to Deepgram in Settings and paste an API key.
 
-   Settings shows each provider's readiness and says exactly what is missing, so this is visible
-   rather than a silent failure.
+   The first-run setup and the record screen both show whether the chosen setup is ready and what
+   is missing, so this is visible rather than a silent failure.
 
 ### Packaging notes
 
 `transcribe.py` is shipped via `extraResources`, not `files`. Anything in `files` goes inside
 `app.asar`, and a path inside an asar cannot be handed to an external Python interpreter — the
-script must exist as a real file on disk. `better-sqlite3` is likewise listed in `asarUnpack`
-because a native `.node` binary cannot be loaded from inside an archive.
+script must exist as a real file on disk. `better-sqlite3` and `ffmpeg-static` are likewise listed
+in `asarUnpack`: a native `.node` binary cannot be loaded from inside an archive, and an executable
+cannot be run from one (`src/main/audio/ffmpeg.ts` rewrites the path to `app.asar.unpacked`).

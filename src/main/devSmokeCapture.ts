@@ -116,7 +116,11 @@ export async function runCaptureSafetyChecks(ctx: SmokeContext & { userDataDir: 
   const loaded = store.get()
   check(
     'settings from an older build gain the new fields',
-    loaded.micDeviceId === '' && loaded.apiKeyReentryNotice === false && loaded.liveProvider === 'none'
+    loaded.micDeviceId === '' &&
+      loaded.apiKeyReentryNotice === false &&
+      loaded.setupComplete === false &&
+      loaded.theme === 'system' &&
+      loaded.liveProvider === 'none'
   )
 
   store.update({ micDeviceId: 'usb-1' })

@@ -785,3 +785,65 @@ mark.applied {
   background: var(--scroll-thumb-hover);
   background-clip: content-box;
 }
+
+/* --- first-run setup ----------------------------------------------------- */
+
+.setup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: var(--bg);
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 48px 24px;
+}
+.setup {
+  width: 100%;
+  max-width: 640px;
+}
+.setup-steps {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 22px;
+}
+.setup-steps span {
+  flex: 1;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--border);
+}
+.setup-steps span.done {
+  background: var(--accent);
+}
+.setup-choice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  margin: 0 0 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text);
+}
+.setup-choice.selected {
+  border-color: var(--accent);
+  background: var(--active);
+}
+.setup-choice input {
+  width: auto;
+  margin-top: 4px;
+}
+.setup-actions {
+  margin-top: 22px;
+}
+code.block {
+  display: block;
+  padding: 8px 10px;
+  background: var(--well);
+  border-radius: 6px;
+  margin: 8px 0 10px;
+}

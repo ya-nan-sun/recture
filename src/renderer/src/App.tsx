@@ -11,6 +11,8 @@ import { GlossaryPanel } from './components/GlossaryPanel'
 import { SettingsView } from './components/SettingsView'
 import { DeleteDialog, RenameDialog } from './components/ManageDialogs'
 import { ExportClassDialog } from './components/ExportDialogs'
+import { SetupWizard } from './components/SetupWizard'
+import { shouldShowSetup } from '@shared/setup'
 import { useReadiness } from './hooks/useReadiness'
 import { recordingAlerts, type AlertAction } from '@shared/alerts'
 import { describeSkipped, partitionImportable } from '@shared/importFormats'
@@ -33,6 +35,7 @@ export default function App(): ReactNode {
   const [renamingClass, setRenamingClass] = useState<ClassRecord | null>(null)
   const [deletingClass, setDeletingClass] = useState<ClassRecord | null>(null)
   const [exportingClass, setExportingClass] = useState<ClassRecord | null>(null)
+  const [setupNeeded, setSetupNeeded] = useState(false)
   const [results, setResults] = useState<SearchHit[]>([])
   const [liveEnabled, setLiveEnabled] = useState(false)
   const [dropping, setDropping] = useState(false)
@@ -94,6 +97,7 @@ export default function App(): ReactNode {
     setClasses(nextClasses)
     setLectures(nextLectures)
     applySettings(settings)
+    setSetupNeeded(shouldShowSetup(settings, nextClasses.length))
     return nextClasses
   }, [applySettings])
 
@@ -577,6 +581,17 @@ export default function App(): ReactNode {
             } catch (err) {
               notify(err instanceof Error ? err.message : String(err))
             }
+          }}
+        />
+      )}
+
+      {setupNeeded && (
+        <SetupWizard
+          onDone={async (created) => {
+            setSetupNeeded(false)
+            const nextClasses = await refresh()
+            const landing = created ?? nextClasses[0] ?? null
+            if (landing) setView({ kind: 'class', classId: landing.id, tab: 'lectures' })
           }}
         />
       )}

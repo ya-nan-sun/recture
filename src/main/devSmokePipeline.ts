@@ -106,7 +106,8 @@ export function testSettings(root: string): AppSettings {
     audioStorage: 'wav',
     theme: 'system',
     transcriptFontSize: 15,
-    playbackRate: 1
+    playbackRate: 1,
+    setupComplete: true
   }
 }
 
