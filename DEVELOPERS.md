@@ -1,4 +1,4 @@
-# LectureRec — developer notes
+# Recture — developer notes
 
 Technical reference. For the user-facing guide see [README.md](README.md).
 
@@ -50,7 +50,7 @@ is never discarded.
 pip install faster-whisper
 ```
 
-Set `LECTUREREC_PYTHON` if your interpreter is not on `PATH`.
+Set `RECTURE_PYTHON` if your interpreter is not on `PATH`.
 
 ### Cloud (optional)
 
@@ -102,7 +102,7 @@ It runs at startup, on a debounced recursive `fs.watch`, and on demand ("Sync wi
 destructive action it takes is removing an index row whose folder is gone. It never writes into a
 lecture's audio and never deletes a file.
 
-Removing something from the library while keeping its files writes a `.lecturerec-ignore` marker into
+Removing something from the library while keeping its files writes a `.recture-ignore` marker into
 the folder, so the scanner skips it — otherwise the watcher would re-adopt it within seconds and
 "remove from library" would be a no-op. Deleting that marker re-admits the folder.
 
@@ -139,7 +139,7 @@ exists on the better-sqlite3 releases page first.
 ## Giving the app to someone else
 
 ```bash
-npm run dist        # -> release/LectureRec Setup 0.1.0.exe  (~124 MB)
+npm run dist        # -> release/Recture Setup 0.1.0.exe  (~124 MB)
 ```
 
 Electron is bundled, so the recipient does **not** need Node, npm, or this repo. They run the

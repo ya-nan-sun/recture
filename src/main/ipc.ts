@@ -37,6 +37,7 @@ import {
 } from './library'
 import type { RecordingController } from './recordingController'
 import { rescanLibrary, type RescanReport } from './rescan'
+import type { HotkeyManager, HotkeyStatus } from './hotkey'
 import { transcriptToMarkdown } from './export/markdown'
 import { transcriptToPdf } from './export/pdf'
 import type { BatchTranscriber } from './transcription/types'
@@ -48,6 +49,7 @@ export interface IpcDeps {
   controller: RecordingController
   transcribers: () => BatchTranscriber[]
   broadcast: (channel: string, payload: unknown) => void
+  hotkey: () => HotkeyManager | null
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -109,6 +111,25 @@ export function registerIpc(deps: IpcDeps): void {
     if (result.canceled || !result.filePaths[0]) return null
     settings.update({ rootDir: result.filePaths[0] })
     return result.filePaths[0]
+  })
+
+  ipcMain.handle(IPC.settingsHotkeyStatus, (): HotkeyStatus => {
+    const manager = deps.hotkey()
+    return manager
+      ? manager.getStatus()
+      : { accelerator: settings.get().recordHotkey, registered: false, detail: 'Shortcuts are unavailable.' }
+  })
+
+  // Applies immediately rather than on next launch, and reports whether the
+  // combination was actually accepted.
+  ipcMain.handle(IPC.settingsSetHotkey, (_e, accelerator: string): HotkeyStatus => {
+    const manager = deps.hotkey()
+    if (!manager) throw new Error('Shortcuts are unavailable in this session.')
+    const status = manager.apply(String(accelerator ?? ''))
+    // Persist whatever the student typed, so a rejected shortcut is still shown
+    // back to them to fix rather than silently reverting.
+    settings.update({ recordHotkey: status.accelerator })
+    return status
   })
 
   // --- library sync --------------------------------------------------------

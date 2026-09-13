@@ -1,8 +1,8 @@
-import type { LectureRecApi } from './index'
+import type { RectureApi } from './index'
 
 declare global {
   interface Window {
-    lecturerec: LectureRecApi
+    recture: RectureApi
   }
 }
 

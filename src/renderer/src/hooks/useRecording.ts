@@ -25,12 +25,12 @@ export function useRecording(onError: (message: string) => void) {
   const captureRef = useRef<MicCapture | null>(null)
 
   useEffect(() => {
-    void window.lecturerec.recording.state().then(setState)
+    void window.recture.recording.state().then(setState)
 
-    const offState = window.lecturerec.events.onRecordingState(setState)
-    const offError = window.lecturerec.events.onRecordingError((payload) => onError(payload.message))
-    const offProgress = window.lecturerec.events.onTranscriptionProgress((p: TranscriptionProgress) => setProgress(p))
-    const offLive = window.lecturerec.events.onLiveTranscript((update: LiveTranscriptUpdate) => {
+    const offState = window.recture.events.onRecordingState(setState)
+    const offError = window.recture.events.onRecordingError((payload) => onError(payload.message))
+    const offProgress = window.recture.events.onTranscriptionProgress((p: TranscriptionProgress) => setProgress(p))
+    const offLive = window.recture.events.onLiveTranscript((update: LiveTranscriptUpdate) => {
       setLiveLines((prev) => {
         const next = [...prev]
         const at = next.findIndex((l) => l.cursor === update.cursor)
@@ -72,18 +72,18 @@ export function useRecording(onError: (message: string) => void) {
 
       let started = false
       try {
-        const next = await window.lecturerec.recording.start(classId, lectureId)
+        const next = await window.recture.recording.start(classId, lectureId)
         started = true
         setState(next)
 
         captureRef.current = await startCapture({
-          onFrame: (pcm) => window.lecturerec.recording.sendAudio(pcm),
+          onFrame: (pcm) => window.recture.recording.sendAudio(pcm),
           onLevel: setLevel,
           onError: (err) => onError(err.message)
         })
       } catch (err) {
         // Never leave a half-open session behind.
-        if (started) await window.lecturerec.recording.stop().catch(() => undefined)
+        if (started) await window.recture.recording.stop().catch(() => undefined)
         await stopCapture()
         onError(err instanceof Error ? err.message : String(err))
       } finally {
@@ -97,8 +97,8 @@ export function useRecording(onError: (message: string) => void) {
     // Stop the microphone first so no frame arrives after the session closes.
     await stopCapture()
     try {
-      const { lectureId } = await window.lecturerec.recording.stop()
-      setState(await window.lecturerec.recording.state())
+      const { lectureId } = await window.recture.recording.stop()
+      setState(await window.recture.recording.state())
       return lectureId
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err))

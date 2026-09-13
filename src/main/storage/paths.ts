@@ -33,7 +33,7 @@ export const CLASSES_DIRNAME = 'Classes'
  * Deleting this file by hand re-admits the folder on the next scan, which is
  * the obvious way to undo a removal.
  */
-export const IGNORE_MARKER = '.lecturerec-ignore'
+export const IGNORE_MARKER = '.recture-ignore'
 
 export interface LecturePaths {
   dir: string

@@ -187,6 +187,13 @@ export interface ProviderAvailability {
   sendsAudioOffDevice: boolean
 }
 
+/** Whether the global record shortcut is actually registered with the OS. */
+export interface HotkeyStatus {
+  accelerator: string
+  registered: boolean
+  detail: string
+}
+
 export interface AppSettings {
   /** Root folder containing `Classes/`. */
   rootDir: string

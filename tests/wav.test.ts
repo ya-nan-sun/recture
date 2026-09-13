@@ -17,7 +17,7 @@ import {
 let dir: string
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), 'lecturerec-wav-'))
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), 'recture-wav-'))
 })
 afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true })

@@ -38,8 +38,8 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setTranscript(await window.lecturerec.transcript.get(lecture.id))
-      setAudioUrl(await window.lecturerec.transcript.audioUrl(lecture.id))
+      setTranscript(await window.recture.transcript.get(lecture.id))
+      setAudioUrl(await window.recture.transcript.audioUrl(lecture.id))
     } finally {
       setLoading(false)
     }
@@ -74,7 +74,7 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
 
   const setSuggestion = async (suggestion: CorrectionSuggestion, status: 'accepted' | 'rejected'): Promise<void> => {
     try {
-      setTranscript(await window.lecturerec.transcript.setSuggestion(lecture.id, suggestion.id, status))
+      setTranscript(await window.recture.transcript.setSuggestion(lecture.id, suggestion.id, status))
     } catch (err) {
       onToast(err instanceof Error ? err.message : String(err))
     }
@@ -83,7 +83,7 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
   const doExport = async (kind: 'markdown' | 'pdf' | 'clipboard'): Promise<void> => {
     try {
       if (kind === 'clipboard') {
-        const result = await window.lecturerec.exports.clipboard(lecture.id, options)
+        const result = await window.recture.exports.clipboard(lecture.id, options)
         if (result.copied) onToast(`Copied ${result.length.toLocaleString()} characters.`)
         else {
           setSections(result.sections ?? [])
@@ -92,8 +92,8 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
         return
       }
       const path = kind === 'markdown'
-        ? await window.lecturerec.exports.markdown(lecture.id, options)
-        : await window.lecturerec.exports.pdf(lecture.id, options)
+        ? await window.recture.exports.markdown(lecture.id, options)
+        : await window.recture.exports.pdf(lecture.id, options)
       onToast(`Saved ${path}`)
     } catch (err) {
       onToast(err instanceof Error ? err.message : String(err))
@@ -163,12 +163,12 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
         <button className="danger" onClick={() => setDeleting(true)}>
           Remove
         </button>
-        <button onClick={() => void window.lecturerec.lectures.reveal(lecture.id)}>Open folder</button>
+        <button onClick={() => void window.recture.lectures.reveal(lecture.id)}>Open folder</button>
         {(lecture.status === 'needs_transcription' || lecture.status === 'needs_attention' || transcript?.source.pass === 'live-draft') && (
           <button
             className="primary"
             onClick={async () => {
-              await window.lecturerec.transcript.retry(lecture.id)
+              await window.recture.transcript.retry(lecture.id)
               onToast('Transcription restarted.')
               onChanged()
             }}
@@ -252,7 +252,7 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
               </span>
               <button
                 onClick={async () => {
-                  await window.lecturerec.exports.copyText(section.text)
+                  await window.recture.exports.copyText(section.text)
                   onToast(`Copied ${section.label}.`)
                 }}
               >
@@ -302,7 +302,7 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
           onSubmit={async (title) => {
             setRenaming(false)
             try {
-              await window.lecturerec.lectures.rename(lecture.id, title)
+              await window.recture.lectures.rename(lecture.id, title)
               onChanged()
               onToast('Lecture renamed.')
             } catch (err) {
@@ -321,7 +321,7 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
           onSubmit={async (classId) => {
             setMoving(false)
             try {
-              await window.lecturerec.lectures.move(lecture.id, classId)
+              await window.recture.lectures.move(lecture.id, classId)
               onChanged()
               onToast('Lecture moved.')
             } catch (err) {
@@ -340,7 +340,7 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
           onConfirm={async (deleteFiles) => {
             setDeleting(false)
             try {
-              const result = await window.lecturerec.lectures.remove(lecture.id, deleteFiles)
+              const result = await window.recture.lectures.remove(lecture.id, deleteFiles)
               onToast(
                 result.filesDeleted
                   ? `Deleted ${lecture.title} and its audio.`

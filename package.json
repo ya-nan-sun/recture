@@ -1,5 +1,5 @@
 {
-  "name": "lecturerec",
+  "name": "recture",
   "version": "0.1.0",
   "description": "Record in-person lectures and get accurate, class-organized transcripts.",
   "main": "./out/main/index.js",
@@ -39,8 +39,8 @@
     "vitest": "^4.1.11"
   },
   "build": {
-    "appId": "app.lecturerec",
-    "productName": "LectureRec",
+    "appId": "app.recture",
+    "productName": "Recture",
     "directories": {
       "output": "release",
       "buildResources": "build"

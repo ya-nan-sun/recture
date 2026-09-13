@@ -10,6 +10,8 @@ import { AUDIO_PROTOCOL, IPC } from '@shared/ipc'
 import { openDatabase } from './db/database'
 import { createRepos } from './db/repos'
 import { SettingsStore } from './storage/settings'
+import { migrateLegacyUserData } from './storage/migrateLegacy'
+import { HotkeyManager } from './hotkey'
 import { ensureDir, isInside } from './storage/paths'
 import { classesRoot } from './storage/paths'
 import { RecordingController, broadcaster } from './recordingController'
@@ -30,6 +32,7 @@ let mainWindow: BrowserWindow | null = null
 /** Set once the app is ready; used by the quit handler to flush audio. */
 let controllerRef: RecordingController | null = null
 let watcherRef: LibraryWatcher | null = null
+let hotkeyRef: HotkeyManager | null = null
 
 const isDev = !app.isPackaged
 
@@ -47,7 +50,7 @@ function createMainWindow(): BrowserWindow {
     minHeight: 600,
     show: false,
     backgroundColor: '#0f1115',
-    title: 'LectureRec',
+    title: 'Recture',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -80,6 +83,15 @@ function allWindows(): BrowserWindow[] {
 
 app.whenReady().then(async () => {
   const userData = app.getPath('userData')
+
+  // The app used to be called LectureRec, which means userData used to live
+  // somewhere else. Bring settings, the saved API key and the index across
+  // before anything reads them.
+  const migration = migrateLegacyUserData(userData)
+  if (migration.migrated) {
+    console.log(`Migrated ${migration.files.length} file(s) from ${migration.from}`)
+  }
+
   const settings = new SettingsStore(userData)
   const db = openDatabase(userData)
   const repos = createRepos(db)
@@ -107,7 +119,7 @@ app.whenReady().then(async () => {
       isDev
         ? path.join(app.getAppPath(), 'resources', 'python', 'transcribe.py')
         : path.join(process.resourcesPath, 'python', 'transcribe.py'),
-    pythonPath: () => process.env.LECTUREREC_PYTHON ?? '',
+    pythonPath: () => process.env.RECTURE_PYTHON ?? '',
     model: () => settings.get().whisperModel,
     computeType: () => settings.get().whisperComputeType
   })
@@ -127,7 +139,14 @@ app.whenReady().then(async () => {
   })
 
   controllerRef = controller
-  registerIpc({ repos, settings, controller, transcribers: () => transcribers, broadcast })
+  registerIpc({
+    repos,
+    settings,
+    controller,
+    transcribers: () => transcribers,
+    broadcast,
+    hotkey: () => hotkeyRef
+  })
   registerClipboardSection()
 
   mainWindow = createMainWindow()
@@ -163,18 +182,16 @@ app.whenReady().then(async () => {
 
   // Record from anywhere: the student should not have to find the window when
   // the professor starts talking.
-  const hotkey = settings.get().recordHotkey
-  if (hotkey) {
-    const registered = globalShortcut.register(hotkey, () => {
-      broadcast(IPC.evtRequestToggleRecord, { source: 'hotkey' })
-      if (!controller.isRecording && mainWindow) {
-        mainWindow.show()
-        mainWindow.focus()
-      }
-    })
-    if (!registered) {
-      console.warn(`Could not register the global hotkey ${hotkey}; it is probably taken by another app.`)
+  hotkeyRef = new HotkeyManager(() => {
+    broadcast(IPC.evtRequestToggleRecord, { source: 'hotkey' })
+    if (!controller.isRecording && mainWindow) {
+      mainWindow.show()
+      mainWindow.focus()
     }
+  })
+  const hotkeyStatus = hotkeyRef.apply(settings.get().recordHotkey)
+  if (!hotkeyStatus.registered) {
+    console.warn(`Record shortcut inactive: ${hotkeyStatus.detail}`)
   }
 
   app.on('activate', () => {
@@ -199,5 +216,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  hotkeyRef?.dispose()
   globalShortcut.unregisterAll()
 })

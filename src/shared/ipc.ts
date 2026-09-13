@@ -9,6 +9,8 @@ export const IPC = {
   settingsHasApiKey: 'settings:has-api-key',
   settingsDiskEncryption: 'settings:disk-encryption',
   settingsChooseRoot: 'settings:choose-root',
+  settingsSetHotkey: 'settings:set-hotkey',
+  settingsHotkeyStatus: 'settings:hotkey-status',
 
   libraryRescan: 'library:rescan',
 

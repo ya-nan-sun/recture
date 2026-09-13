@@ -479,7 +479,7 @@ export async function deleteLecture(
     await fs
       .writeFile(
         path.join(lecture.dirPath, IGNORE_MARKER),
-        `Removed from the LectureRec library on ${new Date().toISOString()}.
+        `Removed from the Recture library on ${new Date().toISOString()}.
 Delete this file to have the app pick this lecture up again.
 `,
         'utf8'
@@ -507,7 +507,7 @@ export async function deleteClass(
     await fs
       .writeFile(
         path.join(klass.dirPath, IGNORE_MARKER),
-        `Removed from the LectureRec library on ${new Date().toISOString()}.
+        `Removed from the Recture library on ${new Date().toISOString()}.
 Delete this file to have the app pick this class up again.
 `,
         'utf8'

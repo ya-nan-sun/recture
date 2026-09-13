@@ -73,7 +73,7 @@ export async function transcriptToPdf(transcript: TranscriptFile, options: Expor
   const doc = await PDFDocument.create()
   doc.setTitle(`${transcript.lectureTitle} — ${transcript.className}`)
   doc.setSubject(`Lecture transcript, ${transcript.className}`)
-  doc.setCreator('LectureRec')
+  doc.setCreator('Recture')
 
   const body = await doc.embedFont(StandardFonts.Helvetica)
   const bold = await doc.embedFont(StandardFonts.HelveticaBold)

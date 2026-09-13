@@ -99,7 +99,7 @@ export class WhisperLocalTranscriber implements BatchTranscriber {
     const python = await findPython(this.options.pythonPath())
     if (!python) throw new PermanentTranscriptionError('Python was not found on this system.')
 
-    const requestFile = path.join(os.tmpdir(), `lecturerec-whisper-${randomUUID()}.json`)
+    const requestFile = path.join(os.tmpdir(), `recture-whisper-${randomUUID()}.json`)
     await fs.writeFile(
       requestFile,
       JSON.stringify({

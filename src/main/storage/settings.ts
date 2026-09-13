@@ -21,6 +21,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { AppSettings } from '@shared/types'
 import { DEFAULT_SEGMENT_SECONDS } from '@shared/types'
+import { resolveDefaultLibraryDir } from './migrateLegacy'
 
 const execFileAsync = promisify(execFile)
 
@@ -29,7 +30,7 @@ const SECRETS_FILE = 'secrets.bin'
 
 export function defaultSettings(): AppSettings {
   return {
-    rootDir: path.join(app.getPath('documents'), 'LectureRec'),
+    rootDir: resolveDefaultLibraryDir(app.getPath('documents'), 'Recture'),
     segmentSeconds: DEFAULT_SEGMENT_SECONDS,
     liveProvider: 'deepgram-live',
     batchProvider: 'whisper-local',

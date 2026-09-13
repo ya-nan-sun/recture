@@ -14,7 +14,7 @@ export function GlossaryPanel({ klass, onToast }: { klass: ClassRecord; onToast:
   const [importing, setImporting] = useState(false)
   const [bulk, setBulk] = useState('')
 
-  const reload = async (): Promise<void> => setTerms(await window.lecturerec.glossary.list(klass.id))
+  const reload = async (): Promise<void> => setTerms(await window.recture.glossary.list(klass.id))
 
   useEffect(() => {
     void reload()
@@ -24,7 +24,7 @@ export function GlossaryPanel({ klass, onToast }: { klass: ClassRecord; onToast:
   const add = async (): Promise<void> => {
     if (!term.trim()) return
     try {
-      await window.lecturerec.glossary.add(klass.id, term.trim(), note.trim() || null)
+      await window.recture.glossary.add(klass.id, term.trim(), note.trim() || null)
       setTerm('')
       setNote('')
       await reload()
@@ -86,7 +86,7 @@ export function GlossaryPanel({ klass, onToast }: { klass: ClassRecord; onToast:
               <button
                 className="ghost"
                 onClick={async () => {
-                  await window.lecturerec.glossary.remove(klass.id, t.id)
+                  await window.recture.glossary.remove(klass.id, t.id)
                   await reload()
                 }}
               >
@@ -114,7 +114,7 @@ export function GlossaryPanel({ klass, onToast }: { klass: ClassRecord; onToast:
             <button
               className="primary"
               onClick={async () => {
-                await window.lecturerec.glossary.importText(klass.id, bulk)
+                await window.recture.glossary.importText(klass.id, bulk)
                 setBulk('')
                 setImporting(false)
                 await reload()

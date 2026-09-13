@@ -19,7 +19,7 @@ const SCHEMA_VERSION = 1
 
 export function openDatabase(userDataDir: string): Db {
   fs.mkdirSync(userDataDir, { recursive: true })
-  const db = new Database(path.join(userDataDir, 'lecturerec.db'))
+  const db = new Database(path.join(userDataDir, 'recture.db'))
 
   // WAL keeps readers unblocked while a recording session writes segment rows;
   // NORMAL sync is safe under WAL and avoids an fsync on every insert.

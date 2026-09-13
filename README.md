@@ -1,8 +1,8 @@
-# LectureRec
+# Recture
 
 Record lectures. Get accurate, searchable transcripts, organised by class.
 
-LectureRec is a desktop app for students. Press record when the professor starts
+Recture is a desktop app for students. Press record when the professor starts
 talking; when the lecture ends you get a searchable, timestamped transcript you can
 export to Markdown or PDF. It's built for the reality of a lecture hall — a laptop
 microphone, background noise, echo, accents, and vocabulary no ordinary
@@ -108,7 +108,7 @@ Runs in the background — keep using your laptop, or start another recording.
 
 **1. Get the app**
 
-Download `LectureRec Setup.exe` from [Releases](../../releases) and run it.
+Download `Recture Setup.exe` from [Releases](../../releases) and run it.
 
 > Windows shows **"Windows protected your PC"** — expected, the app isn't signed
 > with a paid certificate. Click **More info → Run anyway**.
@@ -163,7 +163,7 @@ changes until you click Accept.
 Ordinary folders. Back them up, sync them, rearrange them — the app follows along.
 
 ```
-Documents\LectureRec\Classes\
+Documents\Recture\Classes\
 └── CS 4501 Machine Learning\
     ├── glossary.json              your course vocabulary
     └── 2026-09-12 - Week 3\

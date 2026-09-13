@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { AppSettings, BatchProviderId, ProviderAvailability } from '@shared/types'
+import type { AppSettings, BatchProviderId, HotkeyStatus, ProviderAvailability } from '@shared/types'
 
 /**
  * Settings, including the privacy disclosure.
@@ -14,24 +14,41 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
   const [disk, setDisk] = useState<{ encrypted: boolean | null; detail: string } | null>(null)
   const [hasKey, setHasKey] = useState(false)
   const [apiKey, setApiKey] = useState('')
+  const [hotkey, setHotkey] = useState('')
+  const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus | null>(null)
 
   const reload = async (): Promise<void> => {
-    setSettings(await window.lecturerec.settings.get())
-    setHasKey(await window.lecturerec.settings.hasApiKey('deepgram'))
-    setProviders(await window.lecturerec.settings.providers())
+    setSettings(await window.recture.settings.get())
+    setHasKey(await window.recture.settings.hasApiKey('deepgram'))
+    setProviders(await window.recture.settings.providers())
+    const status = await window.recture.settings.hotkeyStatus()
+    setHotkeyStatus(status)
+    setHotkey(status.accelerator)
   }
 
   useEffect(() => {
     void reload()
-    void window.lecturerec.settings.diskEncryption().then(setDisk)
+    void window.recture.settings.diskEncryption().then(setDisk)
   }, [])
 
   if (!settings) return <div className="main-inner">Loading…</div>
 
   const patch = async (next: Partial<AppSettings>): Promise<void> => {
     try {
-      setSettings(await window.lecturerec.settings.update(next))
-      setProviders(await window.lecturerec.settings.providers())
+      setSettings(await window.recture.settings.update(next))
+      setProviders(await window.recture.settings.providers())
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const applyHotkey = async (): Promise<void> => {
+    if (!hotkey.trim()) return
+    try {
+      const status = await window.recture.settings.setHotkey(hotkey.trim())
+      setHotkeyStatus(status)
+      setHotkey(status.accelerator)
+      onToast(status.registered ? 'Shortcut active.' : `Shortcut not set: ${status.detail}`)
     } catch (err) {
       onToast(err instanceof Error ? err.message : String(err))
     }
@@ -88,7 +105,7 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
           <input readOnly value={settings.rootDir} className="mono" />
           <button
             onClick={async () => {
-              const chosen = await window.lecturerec.settings.chooseRoot()
+              const chosen = await window.recture.settings.chooseRoot()
               if (chosen) {
                 await reload()
                 onToast('New lectures will be saved here. Existing lectures stay where they are.')
@@ -184,7 +201,7 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
           />
           <button
             onClick={async () => {
-              setHasKey(await window.lecturerec.settings.setApiKey('deepgram', apiKey || null))
+              setHasKey(await window.recture.settings.setApiKey('deepgram', apiKey || null))
               setApiKey('')
               await reload()
               onToast('API key saved.')
@@ -197,7 +214,7 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
             <button
               className="danger"
               onClick={async () => {
-                setHasKey(await window.lecturerec.settings.setApiKey('deepgram', null))
+                setHasKey(await window.recture.settings.setApiKey('deepgram', null))
                 await reload()
                 onToast('API key removed.')
               }}
@@ -215,15 +232,32 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
       <h2>Recording shortcut</h2>
       <div className="card">
         <label htmlFor="hotkey">Global hotkey</label>
-        <input
-          id="hotkey"
-          value={settings.recordHotkey}
-          onChange={(e) => void patch({ recordHotkey: e.target.value })}
-          className="mono"
-        />
-        <div className="faint" style={{ marginTop: 8 }}>
-          Works from any app. Takes effect after a restart.
+        <div className="row">
+          <input
+            id="hotkey"
+            value={hotkey}
+            className="mono"
+            placeholder="CommandOrControl+Shift+R"
+            onChange={(e) => setHotkey(e.target.value)}
+            // Committed on blur or Enter, never per keystroke: saving every
+            // character used to persist half-typed, unregisterable shortcuts.
+            onBlur={() => void applyHotkey()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void applyHotkey()
+            }}
+          />
+          <button onClick={() => void applyHotkey()} disabled={!hotkey.trim()}>
+            Apply
+          </button>
         </div>
+        {hotkeyStatus && (
+          <div className="faint" style={{ marginTop: 8 }}>
+            <span className={hotkeyStatus.registered ? 'chip ok' : 'chip warn'}>
+              {hotkeyStatus.registered ? 'Active' : 'Not working'}
+            </span>{' '}
+            {hotkeyStatus.detail}
+          </div>
+        )}
       </div>
     </div>
   )

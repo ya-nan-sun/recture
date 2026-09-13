@@ -34,9 +34,9 @@ export default function App(): ReactNode {
 
   const refresh = useCallback(async () => {
     const [nextClasses, nextLectures, settings] = await Promise.all([
-      window.lecturerec.classes.list(),
-      window.lecturerec.lectures.all(),
-      window.lecturerec.settings.get()
+      window.recture.classes.list(),
+      window.recture.lectures.all(),
+      window.recture.settings.get()
     ])
     setClasses(nextClasses)
     setLectures(nextLectures)
@@ -53,7 +53,7 @@ export default function App(): ReactNode {
           : current
       )
     })
-    const off = window.lecturerec.events.onLibraryChanged((payload) => {
+    const off = window.recture.events.onLibraryChanged((payload) => {
       void refresh()
       // The watcher reports folder changes made outside the app.
       const message = (payload as { message?: string } | null)?.message
@@ -92,7 +92,7 @@ export default function App(): ReactNode {
 
   // The global hotkey routes here, because this window holds the microphone.
   useEffect(() => {
-    return window.lecturerec.events.onToggleRecord(() => {
+    return window.recture.events.onToggleRecord(() => {
       if (recording.isRecording) {
         void stopRecording()
         return
@@ -111,7 +111,7 @@ export default function App(): ReactNode {
   useEffect(() => {
     if (view.kind !== 'search') return
     const timer = setTimeout(async () => {
-      setResults(query.trim() ? await window.lecturerec.lectures.search(query) : [])
+      setResults(query.trim() ? await window.recture.lectures.search(query) : [])
     }, 200)
     return () => clearTimeout(timer)
   }, [query, view.kind])
@@ -119,7 +119,7 @@ export default function App(): ReactNode {
   const createClass = async (): Promise<void> => {
     if (!className.trim()) return
     try {
-      const created = await window.lecturerec.classes.create({ name: className.trim() })
+      const created = await window.recture.classes.create({ name: className.trim() })
       setClassName('')
       setCreatingClass(false)
       await refresh()
@@ -145,7 +145,7 @@ export default function App(): ReactNode {
     <div className="app">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <span className="brand">LectureRec</span>
+          <span className="brand">Recture</span>
           <button className="ghost" onClick={() => setCreatingClass(true)} title="New class">
             ＋
           </button>
@@ -190,7 +190,7 @@ export default function App(): ReactNode {
             title="Re-read the lectures folder from disk"
             onClick={async () => {
               try {
-                const report = await window.lecturerec.library.rescan()
+                const report = await window.recture.library.rescan()
                 await refresh()
                 const changed =
                   report.classesAdopted + report.classesUpdated + report.classesRemoved +
@@ -291,7 +291,7 @@ export default function App(): ReactNode {
                   onStart={(lectureId) => void startRecording(activeClass.id, lectureId)}
                   onStop={() => void stopRecording()}
                   onNewLecture={async () => {
-                    const created = await window.lecturerec.lectures.create(activeClass.id, {})
+                    const created = await window.recture.lectures.create(activeClass.id, {})
                     await refresh()
                     setView({ kind: 'lecture', lectureId: created.id })
                   }}
@@ -377,7 +377,7 @@ export default function App(): ReactNode {
             const target = renamingClass
             setRenamingClass(null)
             try {
-              await window.lecturerec.classes.rename(target.id, name)
+              await window.recture.classes.rename(target.id, name)
               await refresh()
               notify('Class renamed.')
             } catch (err) {
@@ -398,7 +398,7 @@ export default function App(): ReactNode {
             const target = deletingClass
             setDeletingClass(null)
             try {
-              const result = await window.lecturerec.classes.remove(target.id, deleteFiles)
+              const result = await window.recture.classes.remove(target.id, deleteFiles)
               const remaining = await refresh()
               setView(
                 remaining[0] ? { kind: 'class', classId: remaining[0].id, tab: 'lectures' } : { kind: 'settings' }

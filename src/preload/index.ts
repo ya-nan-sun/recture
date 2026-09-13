@@ -12,6 +12,7 @@ import type {
   ClassRecord,
   ExportOptions,
   GlossaryTerm,
+  HotkeyStatus,
   LectureRecord,
   LiveTranscriptUpdate,
   ProviderAvailability,
@@ -56,7 +57,10 @@ const api = {
     hasApiKey: (provider: 'deepgram'): Promise<boolean> => ipcRenderer.invoke(IPC.settingsHasApiKey, provider),
     diskEncryption: (): Promise<{ encrypted: boolean | null; detail: string }> =>
       ipcRenderer.invoke(IPC.settingsDiskEncryption),
-    chooseRoot: (): Promise<string | null> => ipcRenderer.invoke(IPC.settingsChooseRoot)
+    chooseRoot: (): Promise<string | null> => ipcRenderer.invoke(IPC.settingsChooseRoot),
+    hotkeyStatus: (): Promise<HotkeyStatus> => ipcRenderer.invoke(IPC.settingsHotkeyStatus),
+    setHotkey: (accelerator: string): Promise<HotkeyStatus> =>
+      ipcRenderer.invoke(IPC.settingsSetHotkey, accelerator)
   },
 
   library: {
@@ -155,6 +159,6 @@ const api = {
   }
 }
 
-export type LectureRecApi = typeof api
+export type RectureApi = typeof api
 
-contextBridge.exposeInMainWorld('lecturerec', api)
+contextBridge.exposeInMainWorld('recture', api)

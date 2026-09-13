@@ -95,7 +95,7 @@ function failingTranscriber(): BatchTranscriber {
 }
 
 async function main(): Promise<void> {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lecturerec-smoke-'))
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'recture-smoke-'))
   app.setPath('userData', path.join(tmp, 'userData'))
 
   const root = path.join(tmp, 'library')
