@@ -1,6 +1,6 @@
 {
   "name": "recture",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Record in-person lectures and get accurate, class-organized transcripts.",
   "main": "./out/main/index.js",
   "type": "commonjs",
