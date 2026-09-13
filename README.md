@@ -2,8 +2,24 @@
 
 Record lectures. Get accurate, searchable transcripts, organised by class.
 
-Built for a laptop mic in a noisy hall — crosstalk, echo, accents, and vocabulary
-no ordinary transcription app has heard of.
+LectureRec is a desktop app for students. Press record when the professor starts
+talking; when the lecture ends you get a searchable, timestamped transcript you can
+export to Markdown or PDF. It's built for the reality of a lecture hall — a laptop
+microphone, background noise, echo, accents, and vocabulary no ordinary
+transcription app has heard of.
+
+Your recordings are ordinary files in an ordinary folder. Transcription runs either
+entirely on your own computer for free, or in the cloud for speed — your choice, and
+the app is explicit about which one sends your audio anywhere.
+
+## Contents
+
+- [How it works](#how-it-works) — the two-pass design, in one diagram
+- [Your options](#your-options) — **free vs paid**, speed vs accuracy
+- [Install](#install) — the app, Python support, Deepgram key
+- [Using it](#using-it) — from class to exported transcript
+- [Your files](#your-files) — where recordings live
+- [If something breaks](#if-something-breaks)
 
 ---
 
