@@ -39,6 +39,7 @@ import { rescanLibrary, reportIsEmpty } from './rescan'
 import { transcriptToMarkdown } from './export/markdown'
 import { transcriptToPdf } from './export/pdf'
 import { runRecordingPipelineChecks } from './devSmokePipeline'
+import { runCaptureSafetyChecks } from './devSmokeCapture'
 
 const results: { name: string; ok: boolean; detail?: string }[] = []
 
@@ -451,6 +452,9 @@ async function main(): Promise<void> {
 
   // --- 12. recording pipeline: queue, quit and resume, pause, bookmarks ---
   await runRecordingPipelineChecks({ repos, root, check, frame, stubTranscriber })
+
+  // --- 13. capture safety: sleep, disk space, remembered settings ----------
+  await runCaptureSafetyChecks({ repos, root, check, frame, stubTranscriber, userDataDir: path.join(tmp, 'userData') })
 
   // --- report --------------------------------------------------------------
   const failed = results.filter((r) => !r.ok)

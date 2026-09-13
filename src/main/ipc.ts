@@ -25,6 +25,7 @@ import { toPlainText, toSections } from '@shared/transcript'
 import type { Repos } from './db/repos'
 import type { SettingsStore } from './storage/settings'
 import { getDiskEncryptionHint } from './storage/settings'
+import { getDiskSpace } from './diskSpace'
 import { isInside, lecturePaths, readJson, writeJsonAtomic } from './storage/paths'
 import {
   createClass,
@@ -104,6 +105,9 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle(IPC.settingsHasApiKey, (_e, provider: 'deepgram'): boolean => settings.hasApiKey(provider))
 
   ipcMain.handle(IPC.settingsDiskEncryption, () => getDiskEncryptionHint())
+
+  // How much recording space is left, for the low-disk warning.
+  ipcMain.handle(IPC.systemDiskSpace, () => getDiskSpace(settings.get().rootDir))
 
   ipcMain.handle(IPC.settingsChooseRoot, async (event): Promise<string | null> => {
     const win = BrowserWindow.fromWebContents(event.sender)

@@ -84,7 +84,7 @@ function gatedTranscriber(stub: () => BatchTranscriber) {
   }
 }
 
-function testSettings(root: string): AppSettings {
+export function testSettings(root: string): AppSettings {
   return {
     rootDir: root,
     segmentSeconds: 1,
@@ -99,7 +99,9 @@ function testSettings(root: string): AppSettings {
     bookmarkHotkey: '',
     correctionConfidenceThreshold: 0.85,
     correctionSimilarityThreshold: 0.74,
-    acknowledgedCloudNotice: true
+    acknowledgedCloudNotice: true,
+    micDeviceId: '',
+    apiKeyReentryNotice: false
   }
 }
 

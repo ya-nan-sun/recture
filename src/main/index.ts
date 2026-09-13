@@ -1,13 +1,24 @@
 /**
  * Electron main process: the window, the global record hotkey, the audio
- * protocol, and startup crash recovery.
+ * protocol, power management, and startup crash recovery.
  */
 
-import { app, BrowserWindow, globalShortcut, Notification, protocol, net, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  globalShortcut,
+  Notification,
+  powerMonitor,
+  powerSaveBlocker,
+  protocol,
+  net,
+  shell
+} from 'electron'
 import * as path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { AUDIO_PROTOCOL, IPC } from '@shared/ipc'
 import { formatClock } from '@shared/naming'
+import type { RecordingState } from '@shared/types'
 import { openDatabase } from './db/database'
 import { createRepos } from './db/repos'
 import { SettingsStore } from './storage/settings'
@@ -19,6 +30,7 @@ import { RecordingController, broadcaster } from './recordingController'
 import { registerClipboardSection, registerIpc } from './ipc'
 import { recoverAllInterrupted, recoverStrandedTranscriptions } from './library'
 import { LibraryWatcher, describeRescan, rescanLibrary, reportIsEmpty } from './rescan'
+import { PowerGuard } from './powerGuard'
 import { DeepgramBatchTranscriber } from './transcription/deepgramBatch'
 import { WhisperLocalTranscriber } from './transcription/whisperLocal'
 import type { BatchTranscriber } from './transcription/types'
@@ -34,6 +46,7 @@ let mainWindow: BrowserWindow | null = null
 let controllerRef: RecordingController | null = null
 let watcherRef: LibraryWatcher | null = null
 let hotkeyRef: HotkeyManager | null = null
+let powerGuardRef: PowerGuard | null = null
 
 const isDev = !app.isPackaged
 
@@ -95,11 +108,12 @@ app.whenReady().then(async () => {
   if (migration.migrated) {
     console.log(`Migrated ${migration.files.length} file(s) from ${migration.from}`)
   }
-  if (migration.apiKeyNeedsReentry) {
-    console.log('A saved API key could not be carried over; the student must re-enter it.')
-  }
 
   const settings = new SettingsStore(userData)
+  // Migration runs once, so remember a lost key until the student pastes it
+  // again rather than mentioning it on this launch only.
+  if (migration.apiKeyNeedsReentry) settings.update({ apiKeyReentryNotice: true })
+
   const db = openDatabase(userData)
   const repos = createRepos(db)
 
@@ -119,7 +133,14 @@ app.whenReady().then(async () => {
     }
   })
 
-  const broadcast = broadcaster(allWindows)
+  const sendToWindows = broadcaster(allWindows)
+  // Every recording state change also decides whether the computer may sleep.
+  const broadcast = (channel: string, payload: unknown): void => {
+    sendToWindows(channel, payload)
+    if (channel === IPC.evtRecordingState) {
+      powerGuardRef?.setRecording(Boolean((payload as RecordingState).active))
+    }
+  }
 
   const whisper = new WhisperLocalTranscriber({
     scriptPath: () =>
@@ -146,6 +167,26 @@ app.whenReady().then(async () => {
   })
 
   controllerRef = controller
+
+  // Keep the computer awake while recording, and save the open segment before
+  // it sleeps anyway (lid closed, battery critical).
+  powerGuardRef = new PowerGuard(
+    {
+      // Stops the system sleeping, but still lets the screen turn off.
+      start: () => powerSaveBlocker.start('prevent-app-suspension'),
+      stop: (id) => powerSaveBlocker.stop(id),
+      isStarted: (id) => powerSaveBlocker.isStarted(id)
+    },
+    {
+      isRecording: () => controller.isRecording,
+      isPaused: () => controller.getState().paused,
+      pause: () => controller.pause(),
+      notify: (notice) => sendToWindows(IPC.evtPowerNotice, notice)
+    }
+  )
+  powerMonitor.on('suspend', () => void powerGuardRef?.onSuspend())
+  powerMonitor.on('resume', () => powerGuardRef?.onResume())
+
   registerIpc({
     repos,
     settings,
@@ -256,6 +297,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  powerGuardRef?.dispose()
   hotkeyRef?.dispose()
   globalShortcut.unregisterAll()
 })

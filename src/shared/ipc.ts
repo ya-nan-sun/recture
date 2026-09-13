@@ -14,6 +14,11 @@ export const IPC = {
 
   libraryRescan: 'library:rescan',
 
+  // system
+  systemDiskSpace: 'system:disk-space',
+  /** main -> renderer: the computer woke from sleep during a recording. */
+  evtPowerNotice: 'system:power-notice',
+
   // classes
   classesList: 'classes:list',
   classCreate: 'classes:create',

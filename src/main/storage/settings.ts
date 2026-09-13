@@ -43,7 +43,9 @@ export function defaultSettings(): AppSettings {
     bookmarkHotkey: 'Alt+Shift+B',
     correctionConfidenceThreshold: 0.85,
     correctionSimilarityThreshold: 0.74,
-    acknowledgedCloudNotice: false
+    acknowledgedCloudNotice: false,
+    micDeviceId: '',
+    apiKeyReentryNotice: false
   }
 }
 
@@ -118,6 +120,8 @@ export class SettingsStore {
     if (key && key.trim()) secrets[provider] = key.trim()
     else delete secrets[provider]
     this.writeSecrets(secrets)
+    // A key lost in the rename has now been replaced.
+    if (secrets[provider] && this.get().apiKeyReentryNotice) this.update({ apiKeyReentryNotice: false })
   }
 
   hasApiKey(provider: 'deepgram'): boolean {

@@ -6,7 +6,9 @@ import type {
   TranscriptionProgress,
   TranscriptionQueueSnapshot
 } from '@shared/types'
-import { startCapture, type MicCapture, type MicLevel } from '../audio/recorder'
+import { openPreferredDevice } from '@shared/devices'
+import { SilenceDetector, type SilenceState } from '@shared/silence'
+import { listMicrophones, startCapture, type MicCapture, type MicLevel } from '../audio/recorder'
 
 export interface LiveLine {
   cursor: number
@@ -16,8 +18,11 @@ export interface LiveLine {
 }
 
 const EMPTY_QUEUE: TranscriptionQueueSnapshot = { running: null, waiting: [] }
+const SILENCE_OK: SilenceState = { kind: 'ok' }
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+const sameSilence = (a: SilenceState, b: SilenceState): boolean => JSON.stringify(a) === JSON.stringify(b)
 
 /**
  * Owns microphone capture for the window, plus the recording and transcription
@@ -34,7 +39,13 @@ export function useRecording(onError: (message: string) => void) {
   const [progress, setProgress] = useState<TranscriptionProgress | null>(null)
   const [queue, setQueue] = useState<TranscriptionQueueSnapshot>(EMPTY_QUEUE)
   const [starting, setStarting] = useState(false)
+  const [silence, setSilence] = useState<SilenceState>(SILENCE_OK)
+  const [micFellBack, setMicFellBack] = useState(false)
+  const [sleptDuringRecording, setSleptDuringRecording] = useState(false)
   const captureRef = useRef<MicCapture | null>(null)
+  const detectorRef = useRef<SilenceDetector | null>(null)
+  /** The microphone stream may be dead (device lost, or the computer slept). */
+  const captureStaleRef = useRef(false)
 
   useEffect(() => {
     void window.recture.recording.state().then(setState)
@@ -44,6 +55,11 @@ export function useRecording(onError: (message: string) => void) {
     const offError = window.recture.events.onRecordingError((payload) => onError(payload.message))
     const offProgress = window.recture.events.onTranscriptionProgress((p: TranscriptionProgress) => setProgress(p))
     const offQueue = window.recture.events.onTranscriptionQueue(setQueue)
+    const offPower = window.recture.events.onPowerNotice((notice) => {
+      if (notice.kind !== 'resumed-after-sleep') return
+      captureStaleRef.current = true
+      setSleptDuringRecording(true)
+    })
     const offLive = window.recture.events.onLiveTranscript((update: LiveTranscriptUpdate) => {
       setLiveLines((prev) => {
         const next = [...prev]
@@ -67,6 +83,7 @@ export function useRecording(onError: (message: string) => void) {
       offError()
       offProgress()
       offQueue()
+      offPower()
       offLive()
     }
   }, [onError])
@@ -78,38 +95,73 @@ export function useRecording(onError: (message: string) => void) {
     if (capture) await capture.stop().catch(() => undefined)
   }, [])
 
+  /**
+   * Open the microphone chosen in Mic check, or the system default if it has
+   * gone missing, feeding audio to the main process and levels to the silence
+   * detector.
+   */
+  const openCapture = useCallback(async (): Promise<MicCapture> => {
+    // Created before opening, so a microphone that never delivers audio is
+    // reported as stalled instead of never being noticed.
+    const detector = new SilenceDetector(Date.now())
+    detectorRef.current = detector
+
+    const [settings, available] = await Promise.all([
+      window.recture.settings.get(),
+      listMicrophones().catch(() => [] as MediaDeviceInfo[])
+    ])
+    const opened = await openPreferredDevice(settings.micDeviceId, available, (deviceId) =>
+      startCapture({
+        deviceId,
+        onFrame: (pcm) => window.recture.recording.sendAudio(pcm),
+        onLevel: (next) => {
+          setLevel(next)
+          detector.observe(next.rms, Date.now())
+        },
+        onError: (err) => {
+          captureStaleRef.current = true
+          onError(err.message)
+        }
+      })
+    )
+    captureStaleRef.current = false
+    setMicFellBack(opened.fellBack)
+    return opened.handle
+  }, [onError])
+
   const start = useCallback(
     async (classId: string, lectureId: string | null) => {
       if (captureRef.current || starting) return
       setStarting(true)
       setLiveLines([])
+      setSleptDuringRecording(false)
 
       let started = false
       try {
         const next = await window.recture.recording.start(classId, lectureId)
         started = true
         setState(next)
-
-        captureRef.current = await startCapture({
-          onFrame: (pcm) => window.recture.recording.sendAudio(pcm),
-          onLevel: setLevel,
-          onError: (err) => onError(err.message)
-        })
+        captureRef.current = await openCapture()
       } catch (err) {
         // Never leave a half-open session behind.
         if (started) await window.recture.recording.stop().catch(() => undefined)
         await stopCapture()
+        detectorRef.current = null
         onError(messageOf(err))
       } finally {
         setStarting(false)
       }
     },
-    [onError, starting, stopCapture]
+    [onError, openCapture, starting, stopCapture]
   )
 
   const stop = useCallback(async (): Promise<string | null> => {
     // Stop the microphone first so no frame arrives after the session closes.
     await stopCapture()
+    detectorRef.current = null
+    setSilence(SILENCE_OK)
+    setMicFellBack(false)
+    setSleptDuringRecording(false)
     try {
       const { lectureId } = await window.recture.recording.stop()
       setState(await window.recture.recording.state())
@@ -119,6 +171,19 @@ export function useRecording(onError: (message: string) => void) {
       return null
     }
   }, [onError, stopCapture])
+
+  /** Close and reopen the microphone without interrupting the recording. */
+  const reconnect = useCallback(async (): Promise<boolean> => {
+    await stopCapture()
+    try {
+      captureRef.current = await openCapture()
+      setSilence(SILENCE_OK)
+      return true
+    } catch (err) {
+      onError(`Couldn't reopen the microphone: ${messageOf(err)}`)
+      return false
+    }
+  }, [onError, openCapture, stopCapture])
 
   const pause = useCallback(async (): Promise<void> => {
     try {
@@ -130,11 +195,16 @@ export function useRecording(onError: (message: string) => void) {
 
   const resume = useCallback(async (): Promise<void> => {
     try {
+      // After a sleep or a lost device the old stream delivers nothing.
+      if (captureStaleRef.current || !captureRef.current) await reconnect()
       setState(await window.recture.recording.resume())
+      detectorRef.current?.reset(Date.now())
+      setSilence(SILENCE_OK)
+      setSleptDuringRecording(false)
     } catch (err) {
       onError(messageOf(err))
     }
-  }, [onError])
+  }, [onError, reconnect])
 
   const bookmark = useCallback(
     async (note = ''): Promise<Bookmark | null> => {
@@ -147,6 +217,24 @@ export function useRecording(onError: (message: string) => void) {
     },
     [onError]
   )
+
+  // Check for silence once a second while recording. Paused recordings are
+  // meant to be quiet, and coming back from a pause starts the count over.
+  const active = Boolean(state?.active)
+  const paused = Boolean(state?.paused)
+  useEffect(() => {
+    if (!active || paused) {
+      setSilence(SILENCE_OK)
+      return
+    }
+    detectorRef.current?.reset(Date.now())
+    const timer = setInterval(() => {
+      const detector = detectorRef.current
+      const next = detector ? detector.state(Date.now()) : SILENCE_OK
+      setSilence((prev) => (sameSilence(prev, next) ? prev : next))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [active, paused])
 
   useEffect(() => {
     return () => {
@@ -161,12 +249,16 @@ export function useRecording(onError: (message: string) => void) {
     progress,
     queue,
     starting,
-    isRecording: Boolean(state?.active),
-    isPaused: Boolean(state?.paused),
+    silence,
+    micFellBack,
+    sleptDuringRecording,
+    isRecording: active,
+    isPaused: paused,
     start,
     stop,
     pause,
     resume,
+    reconnect,
     bookmark
   }
 }

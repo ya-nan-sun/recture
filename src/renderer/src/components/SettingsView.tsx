@@ -175,6 +175,12 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
 
       <h2>Deepgram API key</h2>
       <div className="card">
+        {settings.apiKeyReentryNotice && !hasKey && (
+          <div className="banner warn" style={{ marginBottom: 10 }}>
+            Your Deepgram API key couldn’t be carried over when the app was renamed from LectureRec, because it was
+            locked to the old app. Paste it again below.
+          </div>
+        )}
         <div className="row">
           <input
             type="password"

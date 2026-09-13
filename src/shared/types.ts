@@ -237,6 +237,26 @@ export interface AppSettings {
   correctionSimilarityThreshold: number
   /** User has seen and acknowledged the cloud-audio disclosure. */
   acknowledgedCloudNotice: boolean
+  /** Microphone chosen in Mic check, used for recording. Empty for the system default. */
+  micDeviceId: string
+  /**
+   * A saved API key could not be carried over from LectureRec and must be
+   * pasted again. Cleared once a key is saved.
+   */
+  apiKeyReentryNotice: boolean
+}
+
+/** Space on the drive that holds the library. */
+export interface DiskSpace {
+  freeBytes: number
+  totalBytes: number
+}
+
+/** Sent when the computer wakes from sleep during a recording. */
+export interface PowerNotice {
+  kind: 'resumed-after-sleep'
+  /** True when the recording was paused because of the sleep. */
+  pausedForSleep: boolean
 }
 
 // ---------------------------------------------------------------------------

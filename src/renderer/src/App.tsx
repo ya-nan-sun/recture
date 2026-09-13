@@ -8,6 +8,8 @@ import { LectureView } from './components/LectureView'
 import { GlossaryPanel } from './components/GlossaryPanel'
 import { SettingsView } from './components/SettingsView'
 import { DeleteDialog, RenameDialog } from './components/ManageDialogs'
+import { useReadiness } from './hooks/useReadiness'
+import { recordingAlerts, type AlertAction } from '@shared/alerts'
 
 type View =
   | { kind: 'class'; classId: string; tab: 'lectures' | 'glossary' }
@@ -31,6 +33,34 @@ export default function App(): ReactNode {
   const notify = useCallback((message: string) => setToast(message), [])
   const recording = useRecording(notify)
   const elapsed = useElapsed(recording.state)
+  const readiness = useReadiness(view.kind, recording.isRecording)
+
+  // Recomputed on every render. While recording, the elapsed clock re-renders
+  // once a second, which keeps "no sound for N seconds" current.
+  const alerts = recordingAlerts({
+    recording: recording.isRecording,
+    paused: recording.isPaused,
+    nowMs: Date.now(),
+    silence: recording.silence,
+    micFellBack: recording.micFellBack,
+    sleptDuringRecording: recording.sleptDuringRecording,
+    disk: readiness.disk,
+    battery: readiness.battery,
+    readiness: readiness.issues
+  })
+
+  // The record panel lists every alert. Anywhere else, the sidebar surfaces
+  // the one that cannot wait, so a dead microphone is noticed from any screen.
+  const recordPanelVisible = view.kind === 'class' && view.tab === 'lectures'
+  const sidebarAlert = recordPanelVisible
+    ? null
+    : alerts.find((a) => a.tone === 'danger' || a.id === 'mic-silent' || a.id === 'slept') ?? null
+
+  const handleAlertAction = (action: AlertAction): void => {
+    if (action === 'settings') setView({ kind: 'settings' })
+    else if (action === 'reconnect') void recording.reconnect()
+    else void recording.resume()
+  }
 
   const refresh = useCallback(async () => {
     const [nextClasses, nextLectures, settings] = await Promise.all([
@@ -194,6 +224,11 @@ export default function App(): ReactNode {
         </div>
 
         <div className="sidebar-footer">
+          {recording.isRecording && sidebarAlert && (
+            <div className={`banner ${sidebarAlert.tone}`} style={{ fontSize: 12, margin: '0 0 8px' }} role="alert">
+              {sidebarAlert.message}
+            </div>
+          )}
           {recording.isRecording && (
             <button className="danger" onClick={() => void stopRecording()}>
               ■ Stop ({formatClock(elapsed)}
@@ -303,6 +338,8 @@ export default function App(): ReactNode {
                   liveLines={recording.liveLines}
                   starting={recording.starting}
                   cloudLiveEnabled={liveEnabled}
+                  alerts={alerts}
+                  onAlertAction={handleAlertAction}
                   onStart={(lectureId) => void startRecording(activeClass.id, lectureId)}
                   onStop={() => void stopRecording()}
                   onPause={() => void recording.pause()}

@@ -11,11 +11,13 @@ import type {
   AppSettings,
   Bookmark,
   ClassRecord,
+  DiskSpace,
   ExportOptions,
   GlossaryTerm,
   HotkeyStatus,
   LectureRecord,
   LiveTranscriptUpdate,
+  PowerNotice,
   ProviderAvailability,
   RecordingState,
   SegmentVerification,
@@ -67,6 +69,11 @@ const api = {
       ipcRenderer.invoke(IPC.settingsHotkeyStatus, name),
     setHotkey: (accelerator: string, name: HotkeyName = 'record'): Promise<HotkeyStatus> =>
       ipcRenderer.invoke(IPC.settingsSetHotkey, accelerator, name)
+  },
+
+  system: {
+    /** Free space on the library's drive, or null if it could not be read. */
+    diskSpace: (): Promise<DiskSpace | null> => ipcRenderer.invoke(IPC.systemDiskSpace)
   },
 
   library: {
@@ -184,6 +191,7 @@ const api = {
       on<TranscriptionQueueSnapshot>(IPC.evtTranscriptionQueue, handler),
     onBookmarkAdded: (handler: (payload: { lectureId: string; bookmark: Bookmark }) => void): Unsubscribe =>
       on(IPC.evtBookmarkAdded, handler),
+    onPowerNotice: (handler: (notice: PowerNotice) => void): Unsubscribe => on<PowerNotice>(IPC.evtPowerNotice, handler),
     onToggleRecord: (handler: () => void): Unsubscribe => on(IPC.evtRequestToggleRecord, () => handler())
   }
 }
