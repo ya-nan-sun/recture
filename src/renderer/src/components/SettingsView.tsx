@@ -1,5 +1,11 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { AppSettings, BatchProviderId, HotkeyStatus, ProviderAvailability } from '@shared/types'
+import type {
+  AppSettings,
+  AudioStorageFormat,
+  BatchProviderId,
+  HotkeyStatus,
+  ProviderAvailability
+} from '@shared/types'
 
 /**
  * Settings, including the privacy disclosure.
@@ -106,6 +112,23 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
                 ? `⚠️ ${disk.detail} Turn on full-disk encryption if your lectures are sensitive — the app relies on it rather than adding a second lock of its own.`
                 : disk.detail
             : 'Checking disk encryption…'}
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <label htmlFor="audio-storage">Keep transcribed recordings as</label>
+          <select
+            id="audio-storage"
+            value={settings.audioStorage}
+            onChange={(e) => void patch({ audioStorage: e.target.value as AudioStorageFormat })}
+          >
+            <option value="wav">Original quality (WAV) · about 115 MB per hour</option>
+            <option value="opus">Compressed (Opus) · about 15 MB per hour</option>
+          </select>
+          <div className="faint" style={{ marginTop: 8 }}>
+            Applies once a lecture has been transcribed. While recording, audio is always saved uncompressed in small
+            checksummed pieces, so a crash costs seconds rather than the lecture. Compressed recordings still
+            re-transcribe well but sound slightly less clear.
+          </div>
         </div>
       </div>
 

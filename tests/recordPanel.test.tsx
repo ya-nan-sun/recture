@@ -61,6 +61,7 @@ function props(overrides: Partial<RecordPanelProps> = {}): RecordPanelProps {
     onResume: vi.fn(),
     onBookmark: vi.fn(),
     onNewLecture: vi.fn(),
+    onImport: vi.fn(),
     ...overrides
   }
 }

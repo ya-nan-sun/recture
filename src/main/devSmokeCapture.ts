@@ -91,8 +91,9 @@ export async function runCaptureSafetyChecks(ctx: SmokeContext & { userDataDir: 
   for (let i = 0; i < 5; i++) controller.writeAudio(toArrayBuffer(frame(100)))
   await controller.stop()
   check('the computer may sleep again once recording stops', !guard.isBlocking)
-  await controller.queue.idle()
+  // Read before transcription folds the segments into one file.
   const total = repos.segments.listByLecture(lecture.id).reduce((sum, s) => sum + s.durationSec, 0)
+  await controller.queue.idle()
   check('audio either side of the sleep is kept', Math.abs(total - 1.0) < 0.01, total.toFixed(3))
   guard.dispose()
 

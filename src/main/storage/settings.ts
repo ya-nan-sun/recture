@@ -45,7 +45,8 @@ export function defaultSettings(): AppSettings {
     correctionSimilarityThreshold: 0.74,
     acknowledgedCloudNotice: false,
     micDeviceId: '',
-    apiKeyReentryNotice: false
+    apiKeyReentryNotice: false,
+    audioStorage: 'wav'
   }
 }
 

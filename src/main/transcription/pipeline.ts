@@ -4,16 +4,20 @@
  * Order matters, and it is chosen so that a failure at any step leaves the
  * recording recoverable:
  *
- *   1. Verify every segment's checksum. Corrupt segments are excluded and
- *      flagged — never silently dropped, never silently included.
- *   2. Assemble the verified segments into final.wav.
+ *   1. Verify the lecture's audio: the archived file from an earlier pass, if
+ *      there is one, and every segment recorded since. Anything damaged is
+ *      excluded and flagged — never silently dropped, never silently included.
+ *   2. Assemble the verified audio into final.wav.
  *   3. Transcribe with retry/backoff.
  *   4. Run the conservative glossary correction step (suggestions only).
  *   5. Write transcript.json atomically, then update the index.
+ *   6. Fold the audio into one checksummed file and remove the now-redundant
+ *      segments — only when nothing was damaged, and only once the new file is
+ *      verified and recorded in the manifest.
  *
  * If step 3 or 4 ultimately fails, the audio is left intact and the lecture is
- * marked `needs_transcription` so it can be retried later. A lecture is never
- * deleted or truncated by this pipeline.
+ * marked `needs_transcription` so it can be retried later. Step 6 failing
+ * costs disk space, never audio. A lecture is never truncated by this pipeline.
  */
 
 import * as path from 'node:path'
@@ -28,36 +32,65 @@ import type {
   TranscriptionProgress
 } from '@shared/types'
 import { findCorrectionSuggestions, glossaryKeyterms } from '@shared/correction'
-import { lecturePaths, writeJsonAtomic } from '../storage/paths'
-import { concatWavFiles, verifySegmentFile } from '../audio/wav'
-import { segmentAbsolutePath } from '../audio/recordingSession'
+import { lecturePaths, readJson, writeJsonAtomic } from '../storage/paths'
+import { verifySegmentFile } from '../audio/wav'
+import { isAudioArchive, segmentAbsolutePath, type AudioArchive, type SegmentManifest } from '../audio/recordingSession'
+import {
+  assembleLectureAudio,
+  compactLectureAudio,
+  verifyArchiveFile,
+  type LectureAudioSource
+} from '../audio/archive'
 import type { Repos } from '../db/repos'
 import type { BatchTranscriber } from './types'
 import { NoUsableAudioError, throwIfAborted } from './types'
 import { DEFAULT_RETRY, withRetry } from './retry'
 
 export interface VerificationOutcome {
-  verified: { relPath: string; absPath: string }[]
+  /** In timeline order: the archive first, then segments recorded since. */
+  verified: LectureAudioSource[]
   corrupt: { relPath: string; reason: SegmentVerification; detail: string }[]
 }
 
-/** Re-hash every segment of a lecture and record the result. */
+/** Re-hash all of a lecture's audio and record the result. */
 export async function verifyLectureSegments(repos: Repos, lecture: LectureRecord): Promise<VerificationOutcome> {
-  const segments = repos.segments.listByLecture(lecture.id)
   const outcome: VerificationOutcome = { verified: [], corrupt: [] }
 
-  for (const segment of segments) {
+  const manifest = await readJson<SegmentManifest>(lecturePaths(lecture.dirPath).manifest)
+  const listed = manifest?.archive
+  const archive = isAudioArchive(listed) ? listed : null
+  if (archive) {
+    const absPath = segmentAbsolutePath(lecture.dirPath, archive.relPath)
+    const result = await verifyArchiveFile(absPath, archive)
+    if (result.ok) {
+      outcome.verified.push({ relPath: archive.relPath, absPath, kind: 'archive', format: archive.format })
+    } else {
+      outcome.corrupt.push({ relPath: archive.relPath, reason: result.reason, detail: result.detail })
+    }
+  }
+
+  for (const segment of repos.segments.listByLecture(lecture.id)) {
+    // Already folded into the archive; the row outlived an interrupted clean-up.
+    if (archive && segment.index <= archive.throughIndex) continue
     const absPath = segmentAbsolutePath(lecture.dirPath, segment.relPath)
     const result = await verifySegmentFile(absPath, segment.sha256)
     if (result.ok) {
       repos.segments.setVerification(segment.id, 'ok')
-      outcome.verified.push({ relPath: segment.relPath, absPath })
+      outcome.verified.push({ relPath: segment.relPath, absPath, kind: 'segment', format: 'wav' })
     } else {
       repos.segments.setVerification(segment.id, result.reason)
       outcome.corrupt.push({ relPath: segment.relPath, reason: result.reason, detail: result.detail })
     }
   }
   return outcome
+}
+
+function noUsableAudioDetail(corrupt: VerificationOutcome['corrupt']): string {
+  if (corrupt.length === 0) return 'No audio segments were recorded for this lecture.'
+  if (corrupt.length === 1 && corrupt[0]!.relPath.startsWith('audio/lecture-')) {
+    return "The lecture's audio file failed its integrity check."
+  }
+  return `All ${corrupt.length} audio segment(s) failed verification.`
 }
 
 export interface FinalPassDeps {
@@ -72,6 +105,8 @@ export interface FinalPassDeps {
 export interface FinalPassResult {
   transcript: TranscriptFile
   corruptSegments: VerificationOutcome['corrupt']
+  /** The single file the audio was folded into, or null if it was not compacted. */
+  archive: AudioArchive | null
 }
 
 export async function runFinalPass(
@@ -91,19 +126,16 @@ export async function runFinalPass(
 
   // --- 1. verify -----------------------------------------------------------
   throwIfAborted(deps.signal)
-  report('verifying', 'Verifying audio segments…', 0)
+  report('verifying', 'Verifying audio…', 0)
   const verification = await verifyLectureSegments(repos, lecture)
 
   repos.lectures.update(lecture.id, {
-    segmentCount: verification.verified.length + verification.corrupt.length,
+    segmentCount: verification.verified.filter((v) => v.kind === 'segment').length + verification.corrupt.length,
     corruptSegmentCount: verification.corrupt.length
   })
 
   if (verification.verified.length === 0) {
-    const detail =
-      verification.corrupt.length > 0
-        ? `All ${verification.corrupt.length} audio segment(s) failed verification.`
-        : 'No audio segments were recorded for this lecture.'
+    const detail = noUsableAudioDetail(verification.corrupt)
     repos.lectures.setStatus(lecture.id, 'needs_attention', detail)
     report('failed', detail)
     throw new NoUsableAudioError(detail)
@@ -122,14 +154,7 @@ export async function runFinalPass(
   throwIfAborted(deps.signal)
   report('assembling', 'Assembling verified audio…', 0.1)
   repos.lectures.setStatus(lecture.id, 'assembling', null)
-
-  // Remove a stale final.wav from a previous failed attempt so we can never
-  // transcribe yesterday's audio for today's lecture.
-  await fs.rm(paths.finalAudio, { force: true })
-  const assembled = await concatWavFiles(
-    verification.verified.map((s) => s.absPath),
-    paths.finalAudio
-  )
+  const audio = await assembleLectureAudio(lecture.dirPath, verification.verified, { signal: deps.signal })
 
   // --- 3. transcribe -------------------------------------------------------
   throwIfAborted(deps.signal)
@@ -147,7 +172,7 @@ export async function runFinalPass(
         attempt
       )
       return transcriber.transcribe({
-        audioPath: paths.finalAudio,
+        audioPath: audio.audioPath,
         language: settings.language,
         keyterms,
         signal: deps.signal,
@@ -191,7 +216,7 @@ export async function runFinalPass(
     className: klass.name,
     lectureTitle: lecture.title,
     recordedAt: lecture.recordedAt,
-    durationSec: result.durationSec || assembled.durationSec,
+    durationSec: result.durationSec || audio.durationSec,
     source: {
       pass: 'final',
       provider: result.provider,
@@ -225,8 +250,29 @@ export async function runFinalPass(
     transcript.segments.map((s) => s.text).join(' ')
   )
 
+  // --- 6. fold the audio into one file -------------------------------------
+  let archive: AudioArchive | null = null
+  if (verification.corrupt.length === 0) {
+    report('writing', 'Tidying up audio files…', 0.98)
+    try {
+      archive = (
+        await compactLectureAudio({
+          lectureDir: lecture.dirPath,
+          audioPath: audio.audioPath,
+          format: settings.audioStorage === 'opus' ? 'opus' : 'wav',
+          signal: deps.signal
+        })
+      ).archive
+      repos.segments.removeByLecture(lecture.id)
+      repos.lectures.update(lecture.id, { segmentCount: 0 })
+    } catch (err) {
+      // Every file is still in place; the next successful pass tries again.
+      console.warn(`Audio for “${lecture.title}” was not compacted: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   report('done', 'Transcript ready.', 1)
-  return { transcript, corruptSegments: verification.corrupt }
+  return { transcript, corruptSegments: verification.corrupt, archive }
 }
 
 /**

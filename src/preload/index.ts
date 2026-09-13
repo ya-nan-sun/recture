@@ -5,7 +5,7 @@
  * exhaustive: the renderer can do exactly what is listed here and nothing more.
  */
 
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import { IPC } from '@shared/ipc'
 import type {
   AppSettings,
@@ -15,6 +15,7 @@ import type {
   ExportOptions,
   GlossaryTerm,
   HotkeyStatus,
+  ImportProgress,
   LectureRecord,
   LiveTranscriptUpdate,
   PowerNotice,
@@ -113,7 +114,16 @@ const api = {
     ): Promise<{
       verified: { relPath: string; absPath: string }[]
       corrupt: { relPath: string; reason: SegmentVerification; detail: string }[]
-    }> => ipcRenderer.invoke(IPC.lectureVerify, id)
+    }> => ipcRenderer.invoke(IPC.lectureVerify, id),
+    /** Import audio or video files as new lectures. With no paths, asks the student to pick files. */
+    importAudio: (classId: string, filePaths?: string[]): Promise<LectureRecord[]> =>
+      ipcRenderer.invoke(IPC.lectureImport, classId, filePaths ?? []),
+    cancelImport: (lectureId: string): Promise<boolean> => ipcRenderer.invoke(IPC.lectureImportCancel, lectureId)
+  },
+
+  files: {
+    /** Where a file dropped onto the window lives on disk. */
+    pathFor: (file: Parameters<typeof webUtils.getPathForFile>[0]): string => webUtils.getPathForFile(file)
   },
 
   glossary: {
@@ -191,6 +201,8 @@ const api = {
       on<TranscriptionQueueSnapshot>(IPC.evtTranscriptionQueue, handler),
     onBookmarkAdded: (handler: (payload: { lectureId: string; bookmark: Bookmark }) => void): Unsubscribe =>
       on(IPC.evtBookmarkAdded, handler),
+    onImportProgress: (handler: (progress: ImportProgress) => void): Unsubscribe =>
+      on<ImportProgress>(IPC.evtImportProgress, handler),
     onPowerNotice: (handler: (notice: PowerNotice) => void): Unsubscribe => on<PowerNotice>(IPC.evtPowerNotice, handler),
     onToggleRecord: (handler: () => void): Unsubscribe => on(IPC.evtRequestToggleRecord, () => handler())
   }

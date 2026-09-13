@@ -37,6 +37,8 @@ export const IPC = {
   lectureSearch: 'lectures:search',
   lectureReveal: 'lectures:reveal',
   lectureVerify: 'lectures:verify',
+  lectureImport: 'lectures:import',
+  lectureImportCancel: 'lectures:import-cancel',
 
   // glossary
   glossaryList: 'glossary:list',
@@ -81,6 +83,7 @@ export const IPC = {
   evtTranscriptionProgress: 'transcription:progress',
   evtTranscriptionQueue: 'transcription:queue',
   evtBookmarkAdded: 'recording:bookmarked',
+  evtImportProgress: 'lectures:import-progress',
   evtLibraryChanged: 'library:changed',
   evtRequestToggleRecord: 'ui:toggle-record',
   evtNavigate: 'ui:navigate'

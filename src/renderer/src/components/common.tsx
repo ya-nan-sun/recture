@@ -6,6 +6,7 @@ import { levelToMeter } from '../audio/recorder'
 export function StatusChip({ lecture }: { lecture: LectureRecord }): ReactNode {
   const map: Record<LectureStatus, { label: string; className: string }> = {
     recording: { label: 'Recording', className: 'chip danger' },
+    importing: { label: 'Importing', className: 'chip busy' },
     queued: { label: 'Waiting to transcribe', className: 'chip busy' },
     assembling: { label: 'Assembling', className: 'chip busy' },
     transcribing: { label: 'Transcribing', className: 'chip busy' },

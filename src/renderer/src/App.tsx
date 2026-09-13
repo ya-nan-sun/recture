@@ -10,6 +10,8 @@ import { SettingsView } from './components/SettingsView'
 import { DeleteDialog, RenameDialog } from './components/ManageDialogs'
 import { useReadiness } from './hooks/useReadiness'
 import { recordingAlerts, type AlertAction } from '@shared/alerts'
+import { describeSkipped, partitionImportable } from '@shared/importFormats'
+import { useImports } from './hooks/useImports'
 
 type View =
   | { kind: 'class'; classId: string; tab: 'lectures' | 'glossary' }
@@ -29,11 +31,13 @@ export default function App(): ReactNode {
   const [deletingClass, setDeletingClass] = useState<ClassRecord | null>(null)
   const [results, setResults] = useState<{ lecture: LectureRecord; snippet: string }[]>([])
   const [liveEnabled, setLiveEnabled] = useState(false)
+  const [dropping, setDropping] = useState(false)
 
   const notify = useCallback((message: string) => setToast(message), [])
   const recording = useRecording(notify)
   const elapsed = useElapsed(recording.state)
   const readiness = useReadiness(view.kind, recording.isRecording)
+  const imports = useImports(notify)
 
   // Recomputed on every render. While recording, the elapsed clock re-renders
   // once a second, which keeps "no sound for N seconds" current.
@@ -125,6 +129,34 @@ export default function App(): ReactNode {
     await refresh()
     if (lectureId) setView({ kind: 'lecture', lectureId })
   }, [recording, refresh])
+
+  /** Import files into a class: the given paths, or ones the student picks. */
+  const importInto = useCallback(
+    async (classId: string, paths?: string[]) => {
+      try {
+        const started = await window.recture.lectures.importAudio(classId, paths)
+        await refresh()
+        if (started.length === 1) setView({ kind: 'lecture', lectureId: started[0]!.id })
+        else if (started.length > 1) {
+          notify(`Importing ${started.length} files. Each is transcribed once it has been imported.`)
+        }
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err))
+      }
+    },
+    [refresh, notify]
+  )
+
+  // A file dropped outside a drop zone must do nothing at all.
+  useEffect(() => {
+    const block = (event: DragEvent): void => event.preventDefault()
+    window.addEventListener('dragover', block)
+    window.addEventListener('drop', block)
+    return () => {
+      window.removeEventListener('dragover', block)
+      window.removeEventListener('drop', block)
+    }
+  }, [])
 
   // The global hotkey routes here, because this window holds the microphone.
   useEffect(() => {
@@ -301,7 +333,32 @@ export default function App(): ReactNode {
         )}
 
         {view.kind === 'class' && activeClass && (
-          <div className="main-inner">
+          <div
+            className="main-inner"
+            style={dropping ? { outline: '2px dashed var(--ok)', outlineOffset: -8, borderRadius: 12 } : undefined}
+            onDragOver={(e) => {
+              if (!e.dataTransfer.types.includes('Files')) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'copy'
+              if (!dropping) setDropping(true)
+            }}
+            onDragLeave={(e) => {
+              if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+              setDropping(false)
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDropping(false)
+              const files = Array.from(e.dataTransfer.files).map((file) => ({
+                name: file.name,
+                path: window.recture.files.pathFor(file)
+              }))
+              const { accepted, skipped } = partitionImportable(files)
+              const skippedNote = describeSkipped(skipped.map((f) => f.name))
+              if (skippedNote) notify(skippedNote)
+              if (accepted.length > 0) void importInto(activeClass.id, accepted.map((f) => f.path))
+            }}
+          >
             <div className="row" style={{ marginBottom: 4 }}>
               <h1 style={{ margin: 0 }}>{activeClass.name}</h1>
               <div className="spacer" />
@@ -340,6 +397,7 @@ export default function App(): ReactNode {
                   cloudLiveEnabled={liveEnabled}
                   alerts={alerts}
                   onAlertAction={handleAlertAction}
+                  onImport={() => void importInto(activeClass.id)}
                   onStart={(lectureId) => void startRecording(activeClass.id, lectureId)}
                   onStop={() => void stopRecording()}
                   onPause={() => void recording.pause()}
@@ -385,6 +443,7 @@ export default function App(): ReactNode {
               classes={classes}
               progress={recording.progress}
               queue={recording.queue}
+              importProgress={imports[activeLecture.id] ?? null}
               onToast={notify}
               onChanged={handleLectureChanged}
               onRemoved={() => {

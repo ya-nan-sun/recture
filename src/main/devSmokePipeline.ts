@@ -7,6 +7,7 @@
  * with only the speech-to-text provider stubbed.
  */
 
+import * as fs from 'node:fs/promises'
 import type { AppSettings } from '@shared/types'
 import type { Repos } from './db/repos'
 import { createClass, createLecture, recoverStrandedTranscriptions } from './library'
@@ -101,7 +102,8 @@ export function testSettings(root: string): AppSettings {
     correctionSimilarityThreshold: 0.74,
     acknowledgedCloudNotice: true,
     micDeviceId: '',
-    apiKeyReentryNotice: false
+    apiKeyReentryNotice: false,
+    audioStorage: 'wav'
   }
 }
 
@@ -201,14 +203,23 @@ export async function runRecordingPipelineChecks(ctx: SmokeContext): Promise<voi
   await relaunched.stop()
   await relaunched.queue.idle()
 
+  // Each sitting is transcribed and folded into the lecture's single audio file.
   const dManifest = await readJson<SegmentManifest>(lecturePaths(lecD.dirPath).manifest)
-  const dIndexes = (dManifest?.segments ?? []).map((s) => s.index).join(',')
-  check('recording again into a lecture adds to its audio', dIndexes === '1,2,3,4', dIndexes)
-  check('the second sitting starts where the first ended', Math.abs(resumedOffset - 1.2) < 0.01, String(resumedOffset))
+  const dArchive = dManifest?.archive
   check(
-    'the lecture is re-transcribed with all of its audio',
-    repos.segments.listByLecture(lecD.id).length === 4 && statusOf(lecD.id) === 'complete',
-    `${repos.segments.listByLecture(lecD.id).length} segments, ${statusOf(lecD.id)}`
+    'recording again into a lecture adds to its audio',
+    Math.abs((dArchive?.durationSec ?? 0) - 2.4) < 0.01 && dArchive?.throughIndex === 4,
+    JSON.stringify(dArchive)
+  )
+  check('the second sitting starts where the first ended', Math.abs(resumedOffset - 1.2) < 0.01, String(resumedOffset))
+  const dFiles = (await fs.readdir(lecturePaths(lecD.dirPath).audioDir)).sort()
+  check(
+    'the lecture is re-transcribed with all of its audio, kept as one file',
+    statusOf(lecD.id) === 'complete' &&
+      dFiles.length === 2 &&
+      dFiles.includes('segments.json') &&
+      repos.segments.listByLecture(lecD.id).length === 0,
+    `${statusOf(lecD.id)}: ${dFiles.join(', ')}`
   )
 
   // --- pausing for a break -------------------------------------------------

@@ -40,6 +40,8 @@ export interface ClassRecord {
 
 export type LectureStatus =
   | 'recording'
+  /** An audio or video file is being converted into this lecture's audio. */
+  | 'importing'
   /** Waiting its turn in the transcription queue. */
   | 'queued'
   | 'assembling'
@@ -244,7 +246,14 @@ export interface AppSettings {
    * pasted again. Cleared once a key is saved.
    */
   apiKeyReentryNotice: boolean
+  /**
+   * How a lecture's audio is kept once it has been transcribed: lossless WAV
+   * (~115 MB/hour) or Opus (~15 MB/hour).
+   */
+  audioStorage: AudioStorageFormat
 }
+
+export type AudioStorageFormat = 'wav' | 'opus'
 
 /** Space on the drive that holds the library. */
 export interface DiskSpace {
@@ -257,6 +266,17 @@ export interface PowerNotice {
   kind: 'resumed-after-sleep'
   /** True when the recording was paused because of the sleep. */
   pausedForSleep: boolean
+}
+
+/** An audio or video file being imported as a lecture. */
+export interface ImportProgress {
+  lectureId: string
+  phase: 'waiting' | 'importing' | 'done' | 'failed' | 'cancelled'
+  /** 0..1 when the file's length is known. */
+  fraction: number | null
+  /** Seconds of audio imported so far. */
+  processedSec: number
+  message: string
 }
 
 // ---------------------------------------------------------------------------

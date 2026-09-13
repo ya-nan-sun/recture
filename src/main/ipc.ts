@@ -46,6 +46,8 @@ import { transcriptToMarkdown } from './export/markdown'
 import { transcriptToPdf } from './export/pdf'
 import type { BatchTranscriber } from './transcription/types'
 import { verifyLectureSegments } from './transcription/pipeline'
+import { isAudioArchive, segmentAbsolutePath, type SegmentManifest } from './audio/recordingSession'
+import { IMPORT_EXTENSIONS } from '@shared/importFormats'
 
 export interface IpcDeps {
   repos: Repos
@@ -195,6 +197,9 @@ export function registerIpc(deps: IpcDeps): void {
     if (!name?.trim()) throw new Error('A class name is required.')
     assertNotRecording('Stop the current recording before renaming this class.')
     assertNoTranscriptionRunningIn(klass.id, 'Wait for the transcription in progress to finish before renaming this class.')
+    if (repos.lectures.listByClass(klass.id).some((l) => controller.isImporting(l.id))) {
+      throw new Error('Wait for the files being imported into this class to finish before renaming it.')
+    }
     return renameClass(repos, settings.get().rootDir, klass, name)
   })
 
@@ -204,6 +209,7 @@ export function registerIpc(deps: IpcDeps): void {
     // Stop any transcription of this class's lectures first: a transcriber still
     // holding files open would make deleting the folder fail on Windows.
     for (const lecture of repos.lectures.listByClass(klass.id)) {
+      await controller.cancelImport(lecture.id)
       await controller.cancelTranscription(lecture.id)
     }
     // Files are kept unless the caller explicitly asks otherwise: losing a
@@ -227,6 +233,36 @@ export function registerIpc(deps: IpcDeps): void {
       createLecture(repos, requireClass(classId), { title: input?.title })
   )
 
+  // Import audio or video files as new lectures. Paths come from a drop onto
+  // the window; with none, the student picks files. Files are only ever read,
+  // and what they become is written inside the library.
+  ipcMain.handle(IPC.lectureImport, async (event, classId: string, filePaths?: unknown): Promise<LectureRecord[]> => {
+    const klass = requireClass(classId)
+    let sources = Array.isArray(filePaths)
+      ? filePaths.filter((p): p is string => typeof p === 'string' && p.trim() !== '')
+      : []
+    if (sources.length === 0) {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const result = await dialog.showOpenDialog(win ?? BrowserWindow.getAllWindows()[0]!, {
+        title: `Import recordings into ${klass.name}`,
+        properties: ['openFile', 'multiSelections'],
+        filters: [
+          { name: 'Audio and video', extensions: [...IMPORT_EXTENSIONS] },
+          { name: 'All files', extensions: ['*'] }
+        ]
+      })
+      if (result.canceled) return []
+      sources = result.filePaths
+    }
+    const started: LectureRecord[] = []
+    for (const source of sources) started.push(await controller.importAudio(klass, source))
+    return started
+  })
+
+  ipcMain.handle(IPC.lectureImportCancel, async (_e, lectureId: string): Promise<boolean> =>
+    controller.cancelImport(String(lectureId ?? ''))
+  )
+
   ipcMain.handle(IPC.lectureRename, async (_e, id: string, title: string): Promise<LectureRecord> => {
     const lecture = requireLecture(id)
     if (!title?.trim()) throw new Error('A lecture title is required.')
@@ -235,6 +271,9 @@ export function registerIpc(deps: IpcDeps): void {
     }
     if (controller.queue.isRunning(lecture.id)) {
       throw new Error('Wait for this lecture to finish transcribing before renaming it.')
+    }
+    if (controller.isImporting(lecture.id)) {
+      throw new Error('Wait for this lecture to finish importing before renaming it.')
     }
     // Renames the folder too, so the on-disk name keeps matching the title.
     return renameLecture(repos, requireClass(lecture.classId), lecture, title)
@@ -248,6 +287,9 @@ export function registerIpc(deps: IpcDeps): void {
     if (controller.queue.isRunning(lecture.id)) {
       throw new Error('Wait for this lecture to finish transcribing before moving it.')
     }
+    if (controller.isImporting(lecture.id)) {
+      throw new Error('Wait for this lecture to finish importing before moving it.')
+    }
     return moveLecture(repos, lecture, requireClass(targetClassId))
   })
 
@@ -255,6 +297,10 @@ export function registerIpc(deps: IpcDeps): void {
     const lecture = requireLecture(id)
     if (controller.currentLectureId === lecture.id) {
       throw new Error('Stop the recording before removing this lecture.')
+    }
+    // Cancelling an import already removes the half-made lecture it was creating.
+    if (await controller.cancelImport(lecture.id)) {
+      return { removedFromLibrary: true, filesDeleted: true, folder: lecture.dirPath }
     }
     await controller.cancelTranscription(lecture.id)
     return deleteLecture(repos, settings.get().rootDir, lecture, Boolean(deleteFiles))
@@ -422,9 +468,13 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle(IPC.transcriptAudioUrl, async (_e, lectureId: string): Promise<string | null> => {
     const lecture = requireLecture(lectureId)
     const paths = lecturePaths(lecture.dirPath)
-    // Prefer the assembled file; fall back to the first segment so a lecture
-    // that failed to transcribe is still listenable.
-    const candidates = [paths.finalAudio]
+    // Prefer the lecture's single archived file, then an assembled final.wav,
+    // then the first segment, so a lecture that failed to transcribe is still
+    // listenable.
+    const candidates: string[] = []
+    const archive = (await readJson<SegmentManifest>(paths.manifest))?.archive
+    if (isAudioArchive(archive)) candidates.push(segmentAbsolutePath(lecture.dirPath, archive.relPath))
+    candidates.push(paths.finalAudio)
     const segments = repos.segments.listByLecture(lecture.id)
     if (segments[0]) candidates.push(`${lecture.dirPath}/${segments[0].relPath}`)
 

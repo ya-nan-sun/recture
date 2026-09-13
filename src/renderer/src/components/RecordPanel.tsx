@@ -196,6 +196,8 @@ export interface RecordPanelProps {
   /** Flag the current moment, with an optional note. */
   onBookmark: (note: string) => void
   onNewLecture: () => void
+  /** Import recordings made elsewhere: a phone, Zoom, Panopto. */
+  onImport: () => void
 }
 
 export function RecordPanel(props: RecordPanelProps): ReactNode {
@@ -341,7 +343,13 @@ export function RecordPanel(props: RecordPanelProps): ReactNode {
             {starting ? 'Starting…' : '● Start recording'}
           </button>
           <button onClick={props.onNewLecture}>New lecture…</button>
+          <button onClick={props.onImport} title="Import a recording from your phone, Zoom, Panopto…">
+            Import recording…
+          </button>
           <div className="spacer" />
+        </div>
+        <div className="faint" style={{ marginTop: 10 }}>
+          Or drop audio and video files onto this page to import them.
         </div>
 
         {props.cloudLiveEnabled && (

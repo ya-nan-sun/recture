@@ -33,7 +33,7 @@ import {
   readJson,
   writeJsonAtomic
 } from './storage/paths'
-import type { SegmentManifest } from './audio/recordingSession'
+import { isAudioArchive, type SegmentManifest } from './audio/recordingSession'
 import type { GlossaryFile } from './library'
 
 interface ClassMeta {
@@ -224,15 +224,15 @@ export async function rescanLibrary(
       const manifest = await readJson<SegmentManifest>(paths.manifest)
       const transcript = await readJson<TranscriptFile>(paths.transcript)
       const segments = manifest?.segments ?? []
+      // A transcribed lecture keeps its audio as one archived file, not segments.
+      const listedArchive = manifest?.archive
+      const archive = isAudioArchive(listedArchive) ? listedArchive : null
+      const hasAudio = segments.length > 0 || archive !== null
 
       // Only adopt folders that actually look like a lecture.
-      if (segments.length === 0 && !transcript && !lectureMeta) continue
+      if (!hasAudio && !transcript && !lectureMeta) continue
 
-      const status: LectureStatus = transcript
-        ? 'complete'
-        : segments.length > 0
-          ? 'needs_transcription'
-          : 'needs_attention'
+      const status: LectureStatus = transcript ? 'complete' : hasAudio ? 'needs_transcription' : 'needs_attention'
 
       const created = repos.lectures.create({
         id: lectureMeta?.id,
@@ -244,7 +244,7 @@ export async function rescanLibrary(
         status,
         statusDetail: transcript
           ? null
-          : segments.length > 0
+          : hasAudio
             ? 'Found on disk with audio but no transcript. Ready to transcribe.'
             : 'Found on disk, but no audio segments were present.'
       })
@@ -265,7 +265,8 @@ export async function rescanLibrary(
 
       repos.lectures.update(created.id, {
         segmentCount: segments.length,
-        durationSec: transcript?.durationSec ?? segments.reduce((n, s) => n + s.durationSec, 0),
+        durationSec:
+          transcript?.durationSec ?? (archive?.durationSec ?? 0) + segments.reduce((n, s) => n + s.durationSec, 0),
         transcriptSource: transcript ? `${transcript.source.provider} · ${transcript.source.model}` : null,
         transcriptPass: transcript?.source.pass ?? null
       })

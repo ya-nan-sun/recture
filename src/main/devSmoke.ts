@@ -40,6 +40,9 @@ import { transcriptToMarkdown } from './export/markdown'
 import { transcriptToPdf } from './export/pdf'
 import { runRecordingPipelineChecks } from './devSmokePipeline'
 import { runCaptureSafetyChecks } from './devSmokeCapture'
+import { runImportAndStorageChecks } from './devSmokeImport'
+import { verifyArchiveFile } from './audio/archive'
+import type { SegmentManifest as AudioManifest } from './audio/recordingSession'
 
 const results: { name: string; ok: boolean; detail?: string }[] = []
 
@@ -160,7 +163,13 @@ async function main(): Promise<void> {
     onProgress: () => undefined
   })
 
-  check('final.wav was assembled', await exists(lecturePaths(lecture.dirPath).finalAudio))
+  check('the lecture audio is kept as one checksummed file', await lectureAudioIntact(lecture.dirPath))
+  check(
+    'the recorded segments are folded away after transcription',
+    repos.segments.listByLecture(lecture.id).length === 0 &&
+      !(await exists(path.join(lecture.dirPath, 'audio', 'segment-0001.wav'))) &&
+      !(await exists(lecturePaths(lecture.dirPath).finalAudio))
+  )
   check('transcript.json was written', await exists(lecturePaths(lecture.dirPath).transcript))
   check('transcript is marked as a final pass', transcript.source.pass === 'final')
   check('lecture is complete', repos.lectures.get(lecture.id)!.status === 'complete')
@@ -311,7 +320,7 @@ async function main(): Promise<void> {
   const renamed = await renameLecture(repos, klass, repos.lectures.get(lecture.id)!, 'Week 3 renamed')
   check('lecture rename moves the folder', await exists(renamed.dirPath) && renamed.dirPath !== lecture.dirPath)
   check('old lecture folder is gone', !(await exists(lecture.dirPath)))
-  check('audio survives a rename', await exists(lecturePaths(renamed.dirPath).finalAudio))
+  check('audio survives a rename', await lectureAudioIntact(renamed.dirPath))
   const renamedTranscript = await readJson<TranscriptFile>(lecturePaths(renamed.dirPath).transcript)
   check('transcript title follows the rename', renamedTranscript?.lectureTitle === 'Week 3 renamed', String(renamedTranscript?.lectureTitle))
 
@@ -319,7 +328,7 @@ async function main(): Promise<void> {
   const moved = await moveLecture(repos, repos.lectures.get(lecture.id)!, other)
   check('lecture move relocates the folder', await exists(moved.dirPath))
   check('moved lecture belongs to the new class', repos.lectures.get(lecture.id)!.classId === other.id)
-  check('audio survives a move', await exists(lecturePaths(moved.dirPath).finalAudio))
+  check('audio survives a move', await lectureAudioIntact(moved.dirPath))
   const movedTranscript = await readJson<TranscriptFile>(lecturePaths(moved.dirPath).transcript)
   check('transcript class follows the move', movedTranscript?.className === other.name, String(movedTranscript?.className))
   // Move it back so the class rename below still covers a populated class.
@@ -334,7 +343,7 @@ async function main(): Promise<void> {
   )
   check(
     'audio survives a class rename',
-    await exists(lecturePaths(repos.lectures.get(lecture.id)!.dirPath).finalAudio)
+    await lectureAudioIntact(repos.lectures.get(lecture.id)!.dirPath)
   )
 
   // Default delete keeps every byte on disk.
@@ -456,6 +465,9 @@ async function main(): Promise<void> {
   // --- 13. capture safety: sleep, disk space, remembered settings ----------
   await runCaptureSafetyChecks({ repos, root, check, frame, stubTranscriber, userDataDir: path.join(tmp, 'userData') })
 
+  // --- 14. importing audio files; compact storage after transcription -------
+  await runImportAndStorageChecks({ repos, root, check, frame, stubTranscriber })
+
   // --- report --------------------------------------------------------------
   const failed = results.filter((r) => !r.ok)
   const lines = results.map((r) => `${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  [${r.detail}]` : ''}`)
@@ -464,6 +476,15 @@ async function main(): Promise<void> {
   await fs.writeFile(process.env.SMOKE_OUT ?? path.join(tmp, 'smoke.txt'), lines.join('\n'), 'utf8')
   await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined)
   app.exit(failed.length === 0 ? 0 : 1)
+}
+
+/** The lecture's audio is one archived file, listed in its manifest and matching its checksum. */
+async function lectureAudioIntact(lectureDir: string): Promise<boolean> {
+  const manifest = await readJson<AudioManifest>(lecturePaths(lectureDir).manifest)
+  const archive = manifest?.archive
+  if (!archive) return false
+  const result = await verifyArchiveFile(path.join(lectureDir, ...archive.relPath.split('/')), archive)
+  return result.ok
 }
 
 async function exists(target: string): Promise<boolean> {

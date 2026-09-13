@@ -12,10 +12,13 @@
  */
 
 import type { BrowserWindow } from 'electron'
+import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
 import type {
   AppSettings,
   Bookmark,
   ClassRecord,
+  ImportProgress,
   LectureRecord,
   LiveStatus,
   LiveTranscriptUpdate,
@@ -39,7 +42,20 @@ import {
   type TranscriptionJobReason
 } from './transcription/queue'
 import { addBookmark } from './bookmarks'
-import { syncGlossaryToDisk } from './library'
+import { createLecture, deleteLecture, syncGlossaryToDisk } from './library'
+import { importAudioFile } from './audio/importAudio'
+
+const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+/** One audio file being imported, or waiting to be. */
+interface ImportJob {
+  sourcePath: string
+  abort: AbortController
+  started: boolean
+  /** Resolves once the import has finished, failed or been cancelled and cleaned up. */
+  done: Promise<void>
+  finish: () => void
+}
 
 export interface ControllerDeps {
   repos: Repos
@@ -62,6 +78,10 @@ export class RecordingController {
   private pausedMs = 0
   private sessionBookmarks: Bookmark[] = []
   readonly queue: TranscriptionQueue
+  /** Imports in progress or waiting, by the id of the lecture each is creating. */
+  private readonly imports = new Map<string, ImportJob>()
+  /** Imports run one at a time, in the order the student added them. */
+  private importChain: Promise<void> = Promise.resolve()
 
   constructor(private readonly deps: ControllerDeps) {
     this.queue = new TranscriptionQueue({
@@ -113,6 +133,9 @@ export class RecordingController {
       throw new Error(
         'That lecture is waiting to be transcribed. Record into a new lecture, or cancel its transcription first.'
       )
+    }
+    if (this.imports.has(lecture.id)) {
+      throw new Error('That lecture is still being imported.')
     }
 
     const settings = this.deps.getSettings()
@@ -371,6 +394,7 @@ export class RecordingController {
     }
     const lecture = this.deps.repos.lectures.get(lectureId)
     if (!lecture) throw new Error('That lecture no longer exists.')
+    if (this.imports.has(lectureId)) throw new Error('Wait for this lecture to finish importing.')
     if (this.queue.has(lectureId)) {
       return { accepted: false, position: this.queue.position(lectureId) }
     }
@@ -395,6 +419,174 @@ export class RecordingController {
     }
     // A running job records its own status when it sees the cancellation.
     return cancelled
+  }
+
+  isImporting(lectureId: string): boolean {
+    return this.imports.has(lectureId)
+  }
+
+  /**
+   * Import an audio or video file as a new lecture in `klass`.
+   *
+   * Resolves as soon as the lecture exists, so the student can watch it
+   * import. The file itself is only read. If the import fails or is cancelled,
+   * the half-made lecture is removed.
+   */
+  async importAudio(klass: ClassRecord, sourcePath: string): Promise<LectureRecord> {
+    const { repos } = this.deps
+    const fileName = path.basename(sourcePath)
+    const stat = await fs.stat(sourcePath).catch(() => null)
+    if (!stat?.isFile()) throw new Error(`Couldn't find ${fileName}.`)
+
+    const lecture = await createLecture(repos, klass, {
+      title: path.parse(sourcePath).name,
+      // The best date on hand: when the file was last written, which for a
+      // voice memo or a downloaded recording is close to when it was made.
+      recordedAt: stat.mtime
+    })
+    const waitingMessage = `Waiting to import ${fileName}…`
+    repos.lectures.setStatus(lecture.id, 'importing', waitingMessage)
+
+    let finish = (): void => undefined
+    const done = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    this.imports.set(lecture.id, { sourcePath, abort: new AbortController(), started: false, done, finish })
+    this.broadcastImport({ lectureId: lecture.id, phase: 'waiting', fraction: null, processedSec: 0, message: waitingMessage })
+
+    this.importChain = this.importChain.then(() => this.runImport(lecture.id)).catch(() => undefined)
+    this.deps.broadcast(IPC.evtLibraryChanged, { lectureId: lecture.id })
+    return repos.lectures.get(lecture.id) ?? lecture
+  }
+
+  /** Stop an import, removing the lecture it was creating. */
+  async cancelImport(lectureId: string): Promise<boolean> {
+    const job = this.imports.get(lectureId)
+    if (!job) return false
+    job.abort.abort()
+    if (job.started) {
+      await job.done
+      return true
+    }
+    // Still waiting its turn: nothing has been written but an empty folder.
+    this.imports.delete(lectureId)
+    await this.discardImportedLecture(lectureId)
+    this.broadcastImport({
+      lectureId,
+      phase: 'cancelled',
+      fraction: null,
+      processedSec: 0,
+      message: `Import of ${path.basename(job.sourcePath)} was cancelled.`
+    })
+    this.deps.broadcast(IPC.evtLibraryChanged, { lectureId })
+    job.finish()
+    return true
+  }
+
+  private async runImport(lectureId: string): Promise<void> {
+    const job = this.imports.get(lectureId)
+    if (!job) return
+    job.started = true
+    const { repos } = this.deps
+    const fileName = path.basename(job.sourcePath)
+    const signal = job.abort.signal
+    let imported = false
+
+    try {
+      const lecture = repos.lectures.get(lectureId)
+      if (!lecture) return
+      repos.lectures.setStatus(lectureId, 'importing', `Importing ${fileName}…`)
+      this.deps.broadcast(IPC.evtLibraryChanged, { lectureId })
+
+      let lastTick = 0
+      const result = await importAudioFile({
+        lectureId,
+        lectureDir: lecture.dirPath,
+        segmentSeconds: this.deps.getSettings().segmentSeconds,
+        sourcePath: job.sourcePath,
+        signal,
+        onSegmentComplete: (entry) => {
+          repos.segments.add({
+            lectureId,
+            index: entry.index,
+            relPath: entry.relPath,
+            startSec: entry.startSec,
+            durationSec: entry.durationSec,
+            byteLength: entry.byteLength,
+            sha256: entry.sha256,
+            verified: 'pending'
+          })
+        },
+        onProgress: ({ processedSec, totalSec }) => {
+          const now = Date.now()
+          if (now - lastTick < 250) return
+          lastTick = now
+          this.broadcastImport({
+            lectureId,
+            phase: 'importing',
+            processedSec,
+            fraction: totalSec ? Math.min(1, processedSec / totalSec) : null,
+            message: `Importing ${fileName}…`
+          })
+        }
+      })
+
+      repos.lectures.update(lectureId, {
+        durationSec: result.durationSec,
+        segmentCount: result.segments.length,
+        status: 'needs_transcription',
+        statusDetail: null
+      })
+      imported = true
+      this.broadcastImport({
+        lectureId,
+        phase: 'done',
+        fraction: 1,
+        processedSec: result.durationSec,
+        message: `Imported ${fileName}.`
+      })
+    } catch (err) {
+      const cancelled = signal.aborted
+      await this.discardImportedLecture(lectureId)
+      this.broadcastImport({
+        lectureId,
+        phase: cancelled ? 'cancelled' : 'failed',
+        fraction: null,
+        processedSec: 0,
+        message: cancelled ? `Import of ${fileName} was cancelled.` : `Couldn't import ${fileName}. ${messageOf(err)}`
+      })
+    } finally {
+      this.imports.delete(lectureId)
+      this.deps.broadcast(IPC.evtLibraryChanged, { lectureId })
+      job.finish()
+    }
+
+    if (imported) {
+      try {
+        this.requestTranscription(lectureId, 'imported')
+      } catch {
+        // Stays "needs transcription", with a Retry button.
+      }
+    }
+  }
+
+  /** Remove a lecture an import created. It holds nothing but what the import wrote. */
+  private async discardImportedLecture(lectureId: string): Promise<void> {
+    const lecture = this.deps.repos.lectures.get(lectureId)
+    if (!lecture) return
+    try {
+      await deleteLecture(this.deps.repos, this.deps.getSettings().rootDir, lecture, true)
+    } catch (err) {
+      this.deps.repos.lectures.setStatus(
+        lectureId,
+        'needs_attention',
+        `This import did not finish and could not be cleaned up automatically (${messageOf(err)}). Remove it from the library.`
+      )
+    }
+  }
+
+  private broadcastImport(progress: ImportProgress): void {
+    this.deps.broadcast(IPC.evtImportProgress, progress)
   }
 
   private async runJob(job: TranscriptionJob, signal: AbortSignal): Promise<void> {
@@ -445,6 +637,8 @@ export class RecordingController {
    * background. An interrupted lecture keeps its place and resumes next launch.
    */
   async shutdown(): Promise<void> {
+    // Imports do not carry over a restart: cancelling removes the half-made lectures.
+    await Promise.all([...this.imports.keys()].map((id) => this.cancelImport(id).catch(() => false)))
     if (this.session) {
       await this.session.stop().catch(() => undefined)
     }

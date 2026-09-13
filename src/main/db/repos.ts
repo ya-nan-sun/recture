@@ -376,6 +376,11 @@ export class SegmentRepo {
   setVerification(id: string, verified: SegmentVerification): void {
     this.db.prepare('UPDATE segments SET verified = ? WHERE id = ?').run(verified, id)
   }
+
+  /** Drop a lecture's segment rows once its audio has been folded into one file. */
+  removeByLecture(lectureId: string): void {
+    this.db.prepare('DELETE FROM segments WHERE lecture_id = ?').run(lectureId)
+  }
 }
 
 // --- glossary --------------------------------------------------------------

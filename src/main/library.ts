@@ -26,7 +26,12 @@ import {
 } from './storage/paths'
 import type { Repos } from './db/repos'
 import { DEFAULT_WAV_FORMAT, repairTruncatedWav, verifySegmentFile } from './audio/wav'
-import { segmentAbsolutePath, type SegmentManifest, type SegmentManifestEntry } from './audio/recordingSession'
+import {
+  isAudioArchive,
+  segmentAbsolutePath,
+  type SegmentManifest,
+  type SegmentManifestEntry
+} from './audio/recordingSession'
 import { DEFAULT_SEGMENT_SECONDS } from '@shared/types'
 
 export interface GlossaryFile {
@@ -180,6 +185,9 @@ export interface RecoveryReport {
 export async function recoverInterruptedLecture(repos: Repos, lecture: LectureRecord): Promise<RecoveryReport> {
   const paths = lecturePaths(lecture.dirPath)
   const manifest = await readJson<SegmentManifest>(paths.manifest)
+  // Audio from before this recording, already folded into one file. Kept as is.
+  const listedArchive = manifest?.archive
+  const archive = isAudioArchive(listedArchive) ? listedArchive : null
 
   const report: RecoveryReport = {
     lectureId: lecture.id,
@@ -226,19 +234,22 @@ export async function recoverInterruptedLecture(repos: Repos, lecture: LectureRe
     files = []
   }
 
-  let startSec = (manifest?.segments ?? []).reduce((n, s) => n + s.durationSec, 0)
+  // Recorded audio follows the archive, if the lecture has one.
+  let startSec = (archive?.durationSec ?? 0) + (manifest?.segments ?? []).reduce((n, s) => n + s.durationSec, 0)
   const recoveredEntries: SegmentManifestEntry[] = []
 
   for (const file of files) {
     const relPath = `audio/${file}`
     if (manifested.has(relPath)) continue
+    const index = Number(/segment-(\d{4})\.wav/.exec(file)?.[1] ?? '0')
+    // Already folded into the archive, and left behind by an interrupted clean-up.
+    if (archive && index <= archive.throughIndex) continue
 
     const abs = path.join(paths.audioDir, file)
     try {
       const repaired = await repairTruncatedWav(abs)
       if (repaired.byteLength === 0) continue
 
-      const index = Number(/segment-(\d{4})\.wav/.exec(file)?.[1] ?? '0')
       recoveredEntries.push({
         index,
         relPath,
@@ -277,6 +288,7 @@ export async function recoverInterruptedLecture(repos: Repos, lecture: LectureRe
       lectureId: lecture.id,
       format: manifest?.format ?? DEFAULT_WAV_FORMAT,
       segmentSeconds: manifest?.segmentSeconds ?? DEFAULT_SEGMENT_SECONDS,
+      ...(archive ? { archive } : {}),
       segments: [...(manifest?.segments ?? []), ...recoveredEntries].sort((a, b) => a.index - b.index),
       closedAt: new Date().toISOString(),
       totalDurationSec: startSec
@@ -288,13 +300,15 @@ export async function recoverInterruptedLecture(repos: Repos, lecture: LectureRe
     durationSec: startSec,
     segmentCount: report.recoveredSegments + report.corruptSegments,
     corruptSegmentCount: report.corruptSegments,
-    status: report.recoveredSegments > 0 ? 'needs_transcription' : 'needs_attention',
+    status: report.recoveredSegments > 0 || archive ? 'needs_transcription' : 'needs_attention',
     statusDetail:
       report.recoveredSegments > 0
         ? `Recording was interrupted. ${report.recoveredSegments} audio segment(s) recovered${
             report.repairedPartial ? ', including a partial final segment' : ''
           }. Ready to transcribe.`
-        : 'Recording was interrupted before any audio was saved.'
+        : archive
+          ? 'Recording was interrupted before any new audio was saved. The earlier audio is intact.'
+          : 'Recording was interrupted before any audio was saved.'
   })
 
   return report
@@ -302,7 +316,7 @@ export async function recoverInterruptedLecture(repos: Repos, lecture: LectureRe
 
 /** Find and recover every lecture left in a recording state by a crash. */
 export async function recoverAllInterrupted(repos: Repos): Promise<RecoveryReport[]> {
-  const stuck = repos.lectures.listAll().filter((l) => l.status === 'recording')
+  const stuck = repos.lectures.listAll().filter((l) => l.status === 'recording' || l.status === 'importing')
   const reports: RecoveryReport[] = []
   for (const lecture of stuck) {
     if (!(await pathExists(lecture.dirPath))) {
@@ -310,6 +324,14 @@ export async function recoverAllInterrupted(repos: Repos): Promise<RecoveryRepor
       continue
     }
     reports.push(await recoverInterruptedLecture(repos, lecture))
+    if (lecture.status === 'importing') {
+      // Only part of the file made it in, and there is no telling how much.
+      repos.lectures.setStatus(
+        lecture.id,
+        'needs_attention',
+        'Importing was interrupted before it finished, so this lecture has only part of the file. Remove it and import the file again.'
+      )
+    }
   }
   return reports
 }

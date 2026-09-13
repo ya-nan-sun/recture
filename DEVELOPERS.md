@@ -68,9 +68,10 @@ The files are the source of truth. The SQLite database is an index over them and
   <YYYY-MM-DD - Title>/
     lecture.json
     audio/
-      segments.json        manifest: checksums + verification state
-      segment-0001.wav …   rolling segments, each checksummed at write time
-      final.wav            assembled from verified segments only
+      segments.json        manifest: checksums for everything below
+      segment-0001.wav …   while recording: rolling segments, each checksummed at write time
+      lecture-<hash>.wav   once transcribed: the whole lecture in one checksummed file
+                           (lecture-<hash>.opus with compressed storage)
     transcript.json        source of truth for every export
     transcript.live.json   live draft, kept only as a fallback
     transcript.md
@@ -91,6 +92,14 @@ apart.
   file is never deleted.
 - If the app dies mid-lecture, the next launch repairs the partially-written segment (truncating to
   a whole sample frame) and marks the lecture ready to transcribe.
+- Once a lecture is transcribed its segments are redundant, since the assembled WAV holds every
+  sample. They are folded into one `lecture-<hash>.wav` (or `.opus`, if Settings says to compress),
+  whose checksum goes into `segments.json` before anything is deleted. A lecture with any damaged
+  audio is never compacted. Recording into it later adds new segments after the archive, and the
+  next pass folds those in too. See `src/main/audio/archive.ts`.
+- Imported files (phone voice memos, Zoom and Panopto downloads) are decoded by ffmpeg and fed
+  through the same `RecordingSession` as a live recording, so they land on disk exactly like one.
+  ffmpeg is never on the recording path.
 
 ## Disk is the source of truth
 

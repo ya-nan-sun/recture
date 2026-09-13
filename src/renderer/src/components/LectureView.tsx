@@ -3,6 +3,7 @@ import type {
   ClassRecord,
   CorrectionSuggestion,
   ExportOptions,
+  ImportProgress,
   LectureRecord,
   TranscriptFile,
   TranscriptionProgress,
@@ -20,13 +21,24 @@ interface Props {
   progress: TranscriptionProgress | null
   /** What the transcription queue is doing; authoritative over a stale status. */
   queue?: TranscriptionQueueSnapshot | null
+  /** Progress of the import creating this lecture, while it runs. */
+  importProgress?: ImportProgress | null
   onToast: (message: string) => void
   onChanged: () => void
   /** Called after the lecture leaves the library, so the view can navigate away. */
   onRemoved: () => void
 }
 
-export function LectureView({ lecture, classes, progress, queue, onToast, onChanged, onRemoved }: Props): ReactNode {
+export function LectureView({
+  lecture,
+  classes,
+  progress,
+  queue,
+  importProgress,
+  onToast,
+  onChanged,
+  onRemoved
+}: Props): ReactNode {
   const [renaming, setRenaming] = useState(false)
   const [moving, setMoving] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -145,6 +157,16 @@ export function LectureView({ lecture, classes, progress, queue, onToast, onChan
     }
   }
 
+  const cancelImport = async (): Promise<void> => {
+    try {
+      // The import removes the lecture it was creating; the parent navigates away.
+      await window.recture.lectures.cancelImport(lecture.id)
+      onChangedRef.current()
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   return (
     <div className="main-inner">
       <div className="row" style={{ marginBottom: 4 }}>
@@ -153,12 +175,12 @@ export function LectureView({ lecture, classes, progress, queue, onToast, onChan
         <StatusChip lecture={lecture} />
       </div>
       <p className="subtitle">
-        {new Date(lecture.recordedAt).toLocaleString()} · {formatClock(lecture.durationSec)} ·{' '}
-        {lecture.segmentCount} segment{lecture.segmentCount === 1 ? '' : 's'}
+        {new Date(lecture.recordedAt).toLocaleString()} · {formatClock(lecture.durationSec)}
+        {lecture.segmentCount > 0 ? ` · ${lecture.segmentCount} segment${lecture.segmentCount === 1 ? '' : 's'}` : ''}
         {lecture.transcriptSource ? ` · ${lecture.transcriptSource}` : ''}
       </p>
 
-      {lecture.statusDetail && (
+      {lecture.statusDetail && lecture.status !== 'importing' && (
         <div className={`banner ${lecture.status === 'complete' ? 'info' : 'warn'}`}>{lecture.statusDetail}</div>
       )}
 
@@ -173,6 +195,30 @@ export function LectureView({ lecture, classes, progress, queue, onToast, onChan
         <div className="banner danger">
           {transcript!.excludedAudioSegments.length} audio segment(s) failed their integrity check and were excluded
           from this transcript. The files are still on disk, in this lecture’s <code>audio</code> folder.
+        </div>
+      )}
+
+      {lecture.status === 'importing' && (
+        <div className="card" data-testid="import-progress">
+          <div className="row" style={{ marginBottom: 8 }}>
+            <strong>{importProgress?.message ?? lecture.statusDetail ?? 'Importing…'}</strong>
+            <div className="spacer" />
+            {importProgress && importProgress.processedSec > 0 && (
+              <span className="faint mono">{formatClock(importProgress.processedSec)}</span>
+            )}
+            <button className="ghost" onClick={() => void cancelImport()}>
+              Cancel
+            </button>
+          </div>
+          <div className="progress">
+            <div
+              className="progress-fill"
+              style={{ width: `${Math.round((importProgress?.fraction ?? 0.03) * 100)}%` }}
+            />
+          </div>
+          <div className="faint" style={{ marginTop: 8 }}>
+            The original file is not changed. Transcription starts as soon as the import finishes.
+          </div>
         </div>
       )}
 
@@ -343,7 +389,9 @@ export function LectureView({ lecture, classes, progress, queue, onToast, onChan
           detail={
             lecture.status === 'needs_transcription'
               ? 'The audio is safe on disk. Use “Retry transcription” above.'
-              : 'It will appear here once the final pass finishes.'
+              : lecture.status === 'importing'
+                ? 'It will appear here once the file is imported and transcribed.'
+                : 'It will appear here once the final pass finishes.'
           }
         />
       ) : (

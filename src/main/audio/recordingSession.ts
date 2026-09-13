@@ -17,7 +17,7 @@
 
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import type { SegmentRecord } from '@shared/types'
+import type { AudioStorageFormat, SegmentRecord } from '@shared/types'
 import { AUDIO_FORMAT } from '@shared/types'
 import { ensureDir, lecturePaths, readJson, segmentPath, segmentRelPath, writeJsonAtomic } from '../storage/paths'
 import { DEFAULT_WAV_FORMAT, WavSegmentWriter, type WavFormat } from './wav'
@@ -32,11 +32,32 @@ export interface SegmentManifestEntry {
   createdAt: string
 }
 
+/**
+ * A lecture's audio once it has been transcribed: one checksummed file that
+ * replaces the segments it was assembled from. See audio/archive.ts.
+ */
+export interface AudioArchive {
+  /** `audio/lecture-<hash>.wav` or `.opus`, relative to the lecture folder. */
+  relPath: string
+  format: AudioStorageFormat
+  sha256: string
+  /** Size of the file on disk. */
+  byteLength: number
+  /** Covers the lecture from 0 to here; segments recorded later follow on. */
+  durationSec: number
+  /** Highest segment index folded in. New segments are numbered after it. */
+  throughIndex: number
+  createdAt: string
+}
+
 export interface SegmentManifest {
   version: 1
   lectureId: string
   format: WavFormat
   segmentSeconds: number
+  /** The start of the lecture, folded into one file after transcription. */
+  archive?: AudioArchive
+  /** Audio recorded since the archive — or all of it, before the first transcription. */
   segments: SegmentManifestEntry[]
   /** Set when the session ended cleanly; absent if the app died mid-lecture. */
   closedAt?: string
@@ -80,6 +101,8 @@ export class RecordingSession {
   private paused = false
   /** Seconds of audio the lecture already had before this session started. */
   private initialDurationSec = 0
+  /** The lecture's archived audio, carried through every manifest this session writes. */
+  private archive: AudioArchive | null = null
   private readonly format: WavFormat
   private readonly bytesPerSecond: number
 
@@ -154,14 +177,20 @@ export class RecordingSession {
     const listed = manifest?.segments
     const existing = (Array.isArray(listed) ? listed : []).filter(isManifestEntry).sort((a, b) => a.index - b.index)
     this.segments.splice(0, this.segments.length, ...existing)
+    const archive = manifest?.archive
+    this.archive = isAudioArchive(archive) ? archive : null
 
-    // Continue the timeline from where the existing audio ends.
-    this.initialDurationSec = existing.reduce((end, s) => Math.max(end, s.startSec + s.durationSec), 0)
+    // Continue the timeline from where the existing audio ends, archive included.
+    this.initialDurationSec = existing.reduce(
+      (end, s) => Math.max(end, s.startSec + s.durationSec),
+      this.archive?.durationSec ?? 0
+    )
     this.elapsedBeforeCurrent = this.initialDurationSec
 
     // Number past every segment file on disk, listed in the manifest or not,
-    // so the exclusive open can never collide with an earlier file.
-    let highest = existing.reduce((n, s) => Math.max(n, s.index), 0)
+    // and past everything folded into the archive, so the exclusive open can
+    // never collide with an earlier file.
+    let highest = existing.reduce((n, s) => Math.max(n, s.index), this.archive?.throughIndex ?? 0)
     const files = await fs.readdir(paths.audioDir).catch(() => [] as string[])
     for (const name of files) {
       if (!name.startsWith('segment-') || !name.endsWith('.wav')) continue
@@ -288,6 +317,7 @@ export class RecordingSession {
       lectureId: this.opts.lectureId,
       format: this.format,
       segmentSeconds: this.opts.segmentSeconds,
+      ...(this.archive ? { archive: this.archive } : {}),
       segments: this.segments,
       ...(closed ? { closedAt: new Date().toISOString(), totalDurationSec: this.elapsedBeforeCurrent } : {})
     }
@@ -319,6 +349,28 @@ function isManifestEntry(value: unknown): value is SegmentManifestEntry {
     Number.isFinite(s.startSec) &&
     Number.isFinite(s.durationSec) &&
     Number.isFinite(s.byteLength)
+  )
+}
+
+/**
+ * Validate an archive entry read from disk. The path must name a lecture audio
+ * file inside the lecture's own audio folder, so a hand-edited or malicious
+ * manifest can never point the app at another file.
+ */
+export function isAudioArchive(value: unknown): value is AudioArchive {
+  const a = value as AudioArchive
+  return (
+    !!a &&
+    typeof a.relPath === 'string' &&
+    /^audio\/lecture-[0-9a-f]{8,64}\.(wav|opus)$/.test(a.relPath) &&
+    (a.format === 'wav' || a.format === 'opus') &&
+    a.relPath.endsWith(`.${a.format}`) &&
+    typeof a.sha256 === 'string' &&
+    /^[0-9a-f]{64}$/.test(a.sha256) &&
+    Number.isFinite(a.durationSec) &&
+    a.durationSec >= 0 &&
+    Number.isInteger(a.throughIndex) &&
+    a.throughIndex >= 0
   )
 }
 

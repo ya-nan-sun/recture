@@ -167,13 +167,13 @@ Documents\Recture\Classes\
 └── CS 4501 Machine Learning\
     ├── glossary.json              your course vocabulary
     └── 2026-09-12 - Week 3\
-        ├── audio\                 the recording, in chunks
+        ├── audio\                 the recording (one file once transcribed)
         ├── transcript.json        the master copy
         ├── transcript.md          exports
         └── transcript.pdf
 ```
 
-**~115 MB per hour.** A 10 hrs/week semester ≈ 18 GB.
+**~115 MB per hour**, or **~15 MB** with compressed storage (Settings). A 10 hrs/week semester ≈ 18 GB, or ≈ 2.5 GB compressed.
 
 Rename a class folder in File Explorer, drag a lecture to another class, or restore
 one from backup — it shows up in the app within seconds.

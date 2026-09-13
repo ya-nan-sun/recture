@@ -84,6 +84,12 @@ function createMainWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  // A file dropped where the page does not handle it would otherwise navigate
+  // the window to that file, replacing the app.
+  win.webContents.on('will-navigate', (event, url) => {
+    if (url !== win.webContents.getURL()) event.preventDefault()
+  })
+
   const target = rendererUrl()
   if (target.url) void win.loadURL(target.url)
   else void win.loadFile(target.file!)

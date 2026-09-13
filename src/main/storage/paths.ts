@@ -10,9 +10,10 @@
  *         <YYYY-MM-DD - Title>/
  *           lecture.json
  *           audio/
- *             segments.json        manifest: checksums + verification state
- *             segment-0001.wav …
- *             final.wav
+ *             segments.json        manifest: checksums for everything below
+ *             segment-0001.wav …   while recording: rolling checksummed segments
+ *             lecture-<hash>.wav   once transcribed: the whole lecture in one checksummed
+ *                                  file (.opus with compressed storage); see audio/archive.ts
  *           transcript.json        source of truth for every export
  *           transcript.live.json   live draft, kept only as a fallback
  *           transcript.md
