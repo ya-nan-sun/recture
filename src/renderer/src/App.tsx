@@ -10,6 +10,7 @@ import { LectureView, type LectureFocus } from './components/LectureView'
 import { GlossaryPanel } from './components/GlossaryPanel'
 import { SettingsView } from './components/SettingsView'
 import { DeleteDialog, RenameDialog } from './components/ManageDialogs'
+import { ExportClassDialog } from './components/ExportDialogs'
 import { useReadiness } from './hooks/useReadiness'
 import { recordingAlerts, type AlertAction } from '@shared/alerts'
 import { describeSkipped, partitionImportable } from '@shared/importFormats'
@@ -31,6 +32,7 @@ export default function App(): ReactNode {
   const [query, setQuery] = useState('')
   const [renamingClass, setRenamingClass] = useState<ClassRecord | null>(null)
   const [deletingClass, setDeletingClass] = useState<ClassRecord | null>(null)
+  const [exportingClass, setExportingClass] = useState<ClassRecord | null>(null)
   const [results, setResults] = useState<SearchHit[]>([])
   const [liveEnabled, setLiveEnabled] = useState(false)
   const [dropping, setDropping] = useState(false)
@@ -386,6 +388,13 @@ export default function App(): ReactNode {
               >
                 Glossary
               </button>
+              <button
+                className="ghost"
+                onClick={() => setExportingClass(activeClass)}
+                title="Export every lecture in this class"
+              >
+                Export…
+              </button>
               <button className="ghost" onClick={() => setRenamingClass(activeClass)} title="Rename class">
                 Rename
               </button>
@@ -513,6 +522,30 @@ export default function App(): ReactNode {
               await window.recture.classes.rename(target.id, name)
               await refresh()
               notify('Class renamed.')
+            } catch (err) {
+              notify(err instanceof Error ? err.message : String(err))
+            }
+          }}
+        />
+      )}
+
+      {exportingClass && (
+        <ExportClassDialog
+          className={exportingClass.name}
+          lectureCount={classLectures(exportingClass.id).length}
+          transcribedCount={classLectures(exportingClass.id).filter((l) => l.transcriptSource).length}
+          onClose={() => setExportingClass(null)}
+          onExport={async ({ format, layout, options }) => {
+            const target = exportingClass
+            setExportingClass(null)
+            try {
+              const result = await window.recture.exports.classLectures(target.id, format, options, layout)
+              if (!result) return
+              const skipped =
+                result.skipped > 0
+                  ? ` ${result.skipped} lecture${result.skipped === 1 ? '' : 's'} without a transcript ${result.skipped === 1 ? 'was' : 'were'} left out.`
+                  : ''
+              notify(`Exported ${result.exported} lecture${result.exported === 1 ? '' : 's'} to ${result.path}.${skipped}`)
             } catch (err) {
               notify(err instanceof Error ? err.message : String(err))
             }

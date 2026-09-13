@@ -7,6 +7,7 @@
 
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import { IPC } from '@shared/ipc'
+import type { ClassExportLayout, ClassExportResult, ExportFormat } from '@shared/exportFormats'
 import type {
   AppSettings,
   Bookmark,
@@ -188,10 +189,23 @@ const api = {
   },
 
   exports: {
-    markdown: (lectureId: string, options?: Partial<ExportOptions>): Promise<string> =>
-      ipcRenderer.invoke(IPC.exportMarkdown, lectureId, options),
-    pdf: (lectureId: string, options?: Partial<ExportOptions>): Promise<string> =>
-      ipcRenderer.invoke(IPC.exportPdf, lectureId, options),
+    /**
+     * Save a lecture in `format`, into its own folder or wherever the student
+     * chooses. Resolves to the saved path, or null if the dialog was cancelled.
+     */
+    lecture: (
+      lectureId: string,
+      format: ExportFormat,
+      options?: Partial<ExportOptions>,
+      destination: 'lecture-folder' | 'choose' = 'lecture-folder'
+    ): Promise<string | null> => ipcRenderer.invoke(IPC.exportLecture, lectureId, format, options, destination),
+    /** Export a class's transcribed lectures as one file, or one file per lecture. */
+    classLectures: (
+      classId: string,
+      format: ExportFormat,
+      options?: Partial<ExportOptions>,
+      layout: ClassExportLayout = 'single'
+    ): Promise<ClassExportResult | null> => ipcRenderer.invoke(IPC.exportClass, classId, format, options, layout),
     clipboard: (
       lectureId: string,
       options?: Partial<ExportOptions>

@@ -278,6 +278,31 @@ export function readableParagraphs(transcript: TranscriptFile, options: ReadingO
   }))
 }
 
+/** One passage as the student reads it, for formats that work passage by passage. */
+export interface ReadableSegment {
+  id: string
+  start: number
+  end: number
+  speaker: string | null
+  text: string
+  edited: boolean
+}
+
+/** Segments with corrections applied, hesitations removed if asked, and speakers named. Empty ones are dropped. */
+export function readableSegments(transcript: TranscriptFile, options: ReadingOptions): ReadableSegment[] {
+  const source = options.applyAcceptedSuggestions ? materializeTranscript(transcript) : transcript
+  return source.segments
+    .map((segment) => ({
+      id: segment.id,
+      start: segment.start,
+      end: segment.end,
+      speaker: speakerLabel(segment.speaker, transcript.speakerNames),
+      text: (options.removeFillers ? removeFillers(segment.text) : segment.text).trim(),
+      edited: Boolean(segment.edit)
+    }))
+    .filter((segment) => segment.text.length > 0)
+}
+
 /** Plain text, used for the clipboard. */
 export function toPlainText(transcript: TranscriptFile, options: ExportOptions): string {
   return readableParagraphs(transcript, options)

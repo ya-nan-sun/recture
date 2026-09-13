@@ -5,8 +5,9 @@
  * configured library root.
  */
 
-import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
 import type {
   AppSettings,
   Bookmark,
@@ -22,6 +23,8 @@ import type {
 } from '@shared/types'
 import { CLIPBOARD_SOFT_LIMIT, DEFAULT_EXPORT_OPTIONS } from '@shared/types'
 import { AUDIO_PROTOCOL, IPC } from '@shared/ipc'
+import { EXPORT_FORMATS, isExportFormat, type ClassExportResult } from '@shared/exportFormats'
+import { sanitizeSegment } from '@shared/naming'
 import { editSegmentText, revertSegmentEdit, setSpeakerName, toPlainText, toSections } from '@shared/transcript'
 import type { Repos } from './db/repos'
 import type { SettingsStore } from './storage/settings'
@@ -45,8 +48,16 @@ import { rescanLibrary, type RescanReport } from './rescan'
 import type { HotkeyManager, HotkeyName, HotkeyStatus } from './hotkey'
 import { addBookmark, readBookmarks, removeBookmark, updateBookmark } from './bookmarks'
 import { loadTranscriptFile, updateTranscript } from './transcriptStore'
-import { transcriptToMarkdown } from './export/markdown'
-import { transcriptToPdf } from './export/pdf'
+import {
+  exportFileName,
+  exportLecturesToFolder,
+  lectureFolderExportPath,
+  loadExportItem,
+  renderClass,
+  renderLecture,
+  writeExportFile,
+  type ExportItem
+} from './export/exporter'
 import type { BatchTranscriber } from './transcription/types'
 import { verifyLectureSegments } from './transcription/pipeline'
 import { isAudioArchive, segmentAbsolutePath, type SegmentManifest } from './audio/recordingSession'
@@ -554,28 +565,96 @@ export function registerIpc(deps: IpcDeps): void {
     return { lecture, transcript }
   }
 
+  const windowFor = (event: IpcMainInvokeEvent): BrowserWindow =>
+    BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0]!
+
+  // Save a lecture in any format: into its own folder, or wherever the student
+  // chooses. Resolves to the saved path, or null if the dialog was cancelled.
   ipcMain.handle(
-    IPC.exportMarkdown,
-    async (_e, lectureId: string, options?: Partial<ExportOptions>): Promise<string> => {
-      const { lecture, transcript } = await requireTranscript(lectureId)
+    IPC.exportLecture,
+    async (
+      event,
+      lectureId: string,
+      format: unknown,
+      options?: Partial<ExportOptions>,
+      destination?: unknown
+    ): Promise<string | null> => {
+      const lecture = requireLecture(lectureId)
+      if (!isExportFormat(format)) throw new Error('Unknown export format.')
+      const item = await loadExportItem(lecture)
+      if (!item) throw new Error('This lecture has no transcript yet.')
       const merged = { ...DEFAULT_EXPORT_OPTIONS, ...options }
-      const markdown = transcriptToMarkdown(transcript, merged, { bookmarks: await readBookmarks(lecture.dirPath) })
-      const target = lecturePaths(lecture.dirPath).markdown
-      assertInRoot(target)
-      await fs.writeFile(target, markdown, 'utf8')
+
+      let target: string
+      if (destination === 'choose') {
+        const info = EXPORT_FORMATS[format]
+        const result = await dialog.showSaveDialog(windowFor(event), {
+          title: `Export “${lecture.title}”`,
+          defaultPath: path.join(app.getPath('documents'), exportFileName(lecture.title, format)),
+          filters: [{ name: info.label, extensions: [info.extension] }]
+        })
+        if (result.canceled || !result.filePath) return null
+        target = result.filePath
+      } else {
+        target = lectureFolderExportPath(lecture.dirPath, format)
+        assertInRoot(target)
+      }
+      await writeExportFile(target, await renderLecture(format, item, merged))
       return target
     }
   )
 
-  ipcMain.handle(IPC.exportPdf, async (_e, lectureId: string, options?: Partial<ExportOptions>): Promise<string> => {
-    const { lecture, transcript } = await requireTranscript(lectureId)
-    const merged = { ...DEFAULT_EXPORT_OPTIONS, ...options }
-    const bytes = await transcriptToPdf(transcript, merged, { bookmarks: await readBookmarks(lecture.dirPath) })
-    const target = lecturePaths(lecture.dirPath).pdf
-    assertInRoot(target)
-    await fs.writeFile(target, bytes)
-    return target
-  })
+  // Export every transcribed lecture in a class, as one file or one per lecture.
+  ipcMain.handle(
+    IPC.exportClass,
+    async (
+      event,
+      classId: string,
+      format: unknown,
+      options?: Partial<ExportOptions>,
+      layout?: unknown
+    ): Promise<ClassExportResult | null> => {
+      const klass = requireClass(classId)
+      if (!isExportFormat(format)) throw new Error('Unknown export format.')
+      const info = EXPORT_FORMATS[format]
+      const single = layout === 'single'
+      if (single && !info.combinable) throw new Error(`${info.label} can only be exported as one file per lecture.`)
+
+      const lectures = repos.lectures.listByClass(klass.id)
+      const items = (await Promise.all(lectures.map((lecture) => loadExportItem(lecture)))).filter(
+        (item): item is ExportItem => item !== null
+      )
+      if (items.length === 0) throw new Error('None of the lectures in this class has a transcript yet.')
+      const merged = { ...DEFAULT_EXPORT_OPTIONS, ...options }
+      const skipped = lectures.length - items.length
+      const win = windowFor(event)
+
+      if (single) {
+        const result = await dialog.showSaveDialog(win, {
+          title: `Export ${klass.name}`,
+          defaultPath: path.join(app.getPath('documents'), exportFileName(klass.name, format)),
+          filters: [{ name: info.label, extensions: [info.extension] }]
+        })
+        if (result.canceled || !result.filePath) return null
+        await writeExportFile(result.filePath, await renderClass(format, klass.name, items, merged))
+        shell.showItemInFolder(result.filePath)
+        return { path: result.filePath, exported: items.length, skipped }
+      }
+
+      const result = await dialog.showOpenDialog(win, {
+        title: `Choose where to save ${klass.name}`,
+        properties: ['openDirectory', 'createDirectory']
+      })
+      if (result.canceled || !result.filePaths[0]) return null
+      const folder = path.join(
+        result.filePaths[0],
+        sanitizeSegment(`${klass.name} - ${info.extension.toUpperCase()}`, klass.name)
+      )
+      const written = await exportLecturesToFolder(folder, items, format, merged)
+      if (written[0]) shell.showItemInFolder(written[0])
+      return { path: folder, exported: written.length, skipped }
+    }
+  )
 
   ipcMain.handle(
     IPC.exportClipboard,

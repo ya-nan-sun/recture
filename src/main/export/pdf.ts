@@ -1,14 +1,16 @@
 /**
  * PDF export via pdf-lib.
  *
- * Built from the same `toParagraphs` output as the Markdown and clipboard
- * exports, so the three can never disagree about what the transcript says.
+ * Built from the same readable paragraphs as every other export, so no two
+ * formats can disagree about what the transcript says. A whole class becomes
+ * one document, each lecture starting on a new page.
  */
 
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib'
 import type { ExportExtras, ExportOptions, TranscriptFile } from '@shared/types'
 import { formatClock } from '@shared/naming'
 import { readableParagraphs } from '@shared/transcript'
+import { formatLectureDate } from '@shared/exportFormats'
 
 const PAGE = { width: 595.28, height: 841.89 } // A4 portrait
 const MARGIN = 56
@@ -27,7 +29,7 @@ function toWinAnsi(text: string): string {
     .replace(/[“”„″]/g, '"')
     .replace(/[–—−]/g, '-')
     .replace(/…/g, '...')
-    .replace(/ /g, ' ')
+    .replace(/ /g, ' ')
     .replace(/[•·]/g, '-')
     .replace(/→/g, '->')
     .replace(/[^\x20-\x7E\xA0-\xFF]/g, '?')
@@ -67,14 +69,30 @@ function wrap(text: string, font: PDFFont, size: number, maxWidth: number): stri
   return lines
 }
 
+export interface PdfLecture {
+  transcript: TranscriptFile
+  extras?: ExportExtras
+}
+
 export async function transcriptToPdf(
   transcript: TranscriptFile,
   options: ExportOptions,
   extras: ExportExtras = {}
 ): Promise<Uint8Array> {
+  return lecturesToPdf([{ transcript, extras }], options, {
+    title: `${transcript.lectureTitle} — ${transcript.className}`,
+    subject: `Lecture transcript, ${transcript.className}`
+  })
+}
+
+export async function lecturesToPdf(
+  lectures: PdfLecture[],
+  options: ExportOptions,
+  meta: { title: string; subject?: string }
+): Promise<Uint8Array> {
   const doc = await PDFDocument.create()
-  doc.setTitle(`${transcript.lectureTitle} — ${transcript.className}`)
-  doc.setSubject(`Lecture transcript, ${transcript.className}`)
+  doc.setTitle(meta.title)
+  doc.setSubject(meta.subject ?? meta.title)
   doc.setCreator('Recture')
 
   const body = await doc.embedFont(StandardFonts.Helvetica)
@@ -101,72 +119,72 @@ export async function transcriptToPdf(
     }
   }
 
-  // --- header --------------------------------------------------------------
-  draw(transcript.lectureTitle, bold, 18)
-  y -= 4
-  const recorded = new Date(transcript.recordedAt)
-  const dateLabel = Number.isNaN(recorded.getTime())
-    ? transcript.recordedAt
-    : recorded.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
-  draw(`${transcript.className} · ${dateLabel}`, body, 11, rgb(0.35, 0.35, 0.4))
-  draw(
-    `Duration ${formatClock(transcript.durationSec)} · Transcribed by ${transcript.source.provider} (${transcript.source.model})`,
-    body,
-    9,
-    rgb(0.45, 0.45, 0.5)
-  )
+  lectures.forEach(({ transcript, extras = {} }, index) => {
+    if (index > 0) newPage()
 
-  if (transcript.source.pass === 'live-draft') {
+    // --- header ------------------------------------------------------------
+    draw(transcript.lectureTitle, bold, 18)
     y -= 4
-    draw('LIVE DRAFT — this is not a final transcript and may contain errors.', bold, 9.5, rgb(0.7, 0.35, 0))
-  }
-  if (transcript.excludedAudioSegments.length > 0) {
-    y -= 4
+    draw(`${transcript.className} · ${formatLectureDate(transcript.recordedAt)}`, body, 11, rgb(0.35, 0.35, 0.4))
     draw(
-      `Warning: ${transcript.excludedAudioSegments.length} audio segment(s) failed integrity checks and were ` +
-        'excluded. Some of the lecture may be missing.',
-      bold,
-      9.5,
-      rgb(0.75, 0.2, 0.2)
+      `Duration ${formatClock(transcript.durationSec)} · Transcribed by ${transcript.source.provider} (${transcript.source.model})`,
+      body,
+      9,
+      rgb(0.45, 0.45, 0.5)
     )
-  }
 
-  const bookmarks = options.includeBookmarks ? [...(extras.bookmarks ?? [])].sort((a, b) => a.atSec - b.atSec) : []
-  if (bookmarks.length > 0) {
+    if (transcript.source.pass === 'live-draft') {
+      y -= 4
+      draw('LIVE DRAFT — this is not a final transcript and may contain errors.', bold, 9.5, rgb(0.7, 0.35, 0))
+    }
+    if (transcript.excludedAudioSegments.length > 0) {
+      y -= 4
+      draw(
+        `Warning: ${transcript.excludedAudioSegments.length} audio segment(s) failed integrity checks and were ` +
+          'excluded. Some of the lecture may be missing.',
+        bold,
+        9.5,
+        rgb(0.75, 0.2, 0.2)
+      )
+    }
+
+    const bookmarks = options.includeBookmarks ? [...(extras.bookmarks ?? [])].sort((a, b) => a.atSec - b.atSec) : []
+    if (bookmarks.length > 0) {
+      y -= 10
+      draw('Bookmarks', bold, 12)
+      for (const bookmark of bookmarks) {
+        draw(`${formatClock(bookmark.atSec)}   ${bookmark.note.trim() || 'Bookmarked moment'}`, body, 10)
+      }
+    }
+
     y -= 10
-    draw('Bookmarks', bold, 12)
-    for (const bookmark of bookmarks) {
-      draw(`${formatClock(bookmark.atSec)}   ${bookmark.note.trim() || 'Bookmarked moment'}`, body, 10)
-    }
-  }
+    need(12)
+    page.drawLine({
+      start: { x: MARGIN, y },
+      end: { x: PAGE.width - MARGIN, y },
+      thickness: 0.75,
+      color: rgb(0.8, 0.8, 0.85)
+    })
+    y -= 18
 
-  y -= 10
-  need(12)
-  page.drawLine({
-    start: { x: MARGIN, y },
-    end: { x: PAGE.width - MARGIN, y },
-    thickness: 0.75,
-    color: rgb(0.8, 0.8, 0.85)
+    // --- body --------------------------------------------------------------
+    for (const p of readableParagraphs(transcript, options)) {
+      need(LINE_HEIGHT * 2)
+      if (options.includeTimestamps) {
+        page.drawText(toWinAnsi(`[${formatClock(p.start)}]`), {
+          x: MARGIN,
+          y: y - BODY_SIZE,
+          size: 8.5,
+          font: mono,
+          color: rgb(0.5, 0.5, 0.58)
+        })
+        y -= LINE_HEIGHT
+      }
+      if (p.speaker) draw(`${p.speaker}:`, bold, BODY_SIZE)
+      draw(p.text, body, BODY_SIZE)
+      y -= 8
+    }
   })
-  y -= 18
-
-  // --- body ----------------------------------------------------------------
-  for (const p of readableParagraphs(transcript, options)) {
-    need(LINE_HEIGHT * 2)
-    if (options.includeTimestamps) {
-      page.drawText(toWinAnsi(`[${formatClock(p.start)}]`), {
-        x: MARGIN,
-        y: y - BODY_SIZE,
-        size: 8.5,
-        font: mono,
-        color: rgb(0.5, 0.5, 0.58)
-      })
-      y -= LINE_HEIGHT
-    }
-    if (p.speaker) draw(`${p.speaker}:`, bold, BODY_SIZE)
-    draw(p.text, body, BODY_SIZE)
-    y -= 8
-  }
 
   // --- page numbers --------------------------------------------------------
   const pages = doc.getPages()

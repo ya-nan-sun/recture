@@ -76,8 +76,8 @@ export const IPC = {
   transcriptSetSpeakerName: 'transcript:set-speaker-name',
 
   // export
-  exportMarkdown: 'export:markdown',
-  exportPdf: 'export:pdf',
+  exportLecture: 'export:lecture',
+  exportClass: 'export:class',
   exportClipboard: 'export:clipboard',
 
   // events (main -> renderer)

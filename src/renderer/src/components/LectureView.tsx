@@ -23,6 +23,7 @@ import {
   playbackKeyAction,
   stepPlaybackRate
 } from '@shared/reading'
+import { EXPORT_FORMATS, EXPORT_FORMAT_ORDER, type ExportFormat } from '@shared/exportFormats'
 import { Empty, StatusChip } from './common'
 import { DeleteDialog, MoveLectureDialog, RenameDialog } from './ManageDialogs'
 
@@ -94,6 +95,7 @@ export function LectureView({
   const [flash, setFlash] = useState<{ segmentId: string; query: string; nonce: number } | null>(null)
   const [showOutline, setShowOutline] = useState(false)
   const [rate, setRate] = useState(() => normalizePlaybackRate(playbackRate ?? 1))
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const audioRef = useRef<HTMLAudioElement>(null)
   const transcriptRef = useRef<HTMLDivElement>(null)
   const findInputRef = useRef<HTMLInputElement>(null)
@@ -289,21 +291,23 @@ export function LectureView({
     }
   }
 
-  const doExport = async (kind: 'markdown' | 'pdf' | 'clipboard'): Promise<void> => {
+  const exportLecture = async (destination: 'lecture-folder' | 'choose'): Promise<void> => {
     try {
-      if (kind === 'clipboard') {
-        const result = await window.recture.exports.clipboard(lecture.id, options)
-        if (result.copied) onToast(`Copied ${result.length.toLocaleString()} characters.`)
-        else {
-          setSections(result.sections ?? [])
-          onToast('This transcript is long — copy it in sections.')
-        }
-        return
+      const saved = await window.recture.exports.lecture(lecture.id, exportFormat, options, destination)
+      if (saved) onToast(`Saved ${saved}`)
+    } catch (err) {
+      onToast(messageOf(err))
+    }
+  }
+
+  const copyText = async (): Promise<void> => {
+    try {
+      const result = await window.recture.exports.clipboard(lecture.id, options)
+      if (result.copied) onToast(`Copied ${result.length.toLocaleString()} characters.`)
+      else {
+        setSections(result.sections ?? [])
+        onToast('This transcript is long — copy it in sections.')
       }
-      const path = kind === 'markdown'
-        ? await window.recture.exports.markdown(lecture.id, options)
-        : await window.recture.exports.pdf(lecture.id, options)
-      onToast(`Saved ${path}`)
     } catch (err) {
       onToast(messageOf(err))
     }
@@ -506,13 +510,31 @@ export function LectureView({
       )}
 
       <div className="row wrap" style={{ marginBottom: 14, gap: 8 }}>
-        <button onClick={() => void doExport('markdown')} disabled={!transcript}>
-          Export Markdown
+        <select
+          aria-label="Export format"
+          value={exportFormat}
+          onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
+          disabled={!transcript}
+          title={EXPORT_FORMATS[exportFormat].hint}
+          style={{ width: 'auto' }}
+        >
+          {EXPORT_FORMAT_ORDER.map((format) => (
+            <option key={format} value={format}>
+              {EXPORT_FORMATS[format].label}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={() => void exportLecture('lecture-folder')}
+          disabled={!transcript}
+          title="Save into this lecture’s folder"
+        >
+          Export
         </button>
-        <button onClick={() => void doExport('pdf')} disabled={!transcript}>
-          Export PDF
+        <button onClick={() => void exportLecture('choose')} disabled={!transcript}>
+          Save as…
         </button>
-        <button onClick={() => void doExport('clipboard')} disabled={!transcript}>
+        <button onClick={() => void copyText()} disabled={!transcript}>
           Copy text
         </button>
         <div className="spacer" />

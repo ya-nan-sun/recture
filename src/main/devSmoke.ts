@@ -42,6 +42,7 @@ import { runRecordingPipelineChecks } from './devSmokePipeline'
 import { runCaptureSafetyChecks } from './devSmokeCapture'
 import { runImportAndStorageChecks } from './devSmokeImport'
 import { runReadingChecks } from './devSmokeReading'
+import { runExportChecks } from './devSmokeExports'
 import { verifyArchiveFile } from './audio/archive'
 import type { SegmentManifest as AudioManifest } from './audio/recordingSession'
 
@@ -471,6 +472,9 @@ async function main(): Promise<void> {
 
   // --- 15. reading: search by moment, edits, speakers, bookmarks in exports --
   await runReadingChecks({ repos, root, check, frame, stubTranscriber, db, userDataDir: path.join(tmp, 'userData') })
+
+  // --- 16. exports: every format, a class as one file or a folder -----------
+  await runExportChecks({ repos, root, check, frame, stubTranscriber, userDataDir: path.join(tmp, 'userData') })
 
   // --- report --------------------------------------------------------------
   const failed = results.filter((r) => !r.ok)
