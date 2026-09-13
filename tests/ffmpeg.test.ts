@@ -132,6 +132,24 @@ describe('decodeToPcm', { timeout: 30_000 }, () => {
     ).rejects.toMatchObject({ name: 'FfmpegAbortedError' })
     expect(Date.now() - started).toBeLessThan(10_000)
   })
+
+  it('lets go of the file it was reading as soon as it has been cancelled', async () => {
+    // Regression: cancelling returned before ffmpeg had exited. On Windows the
+    // file stayed locked for a moment, so deleting it straight away failed
+    // with EBUSY.
+    const source = await makeTone(dir, 'held.mp3', 120)
+    const abort = new AbortController()
+    await expect(
+      decodeToPcm(
+        source,
+        async () => {
+          abort.abort()
+        },
+        { signal: abort.signal }
+      )
+    ).rejects.toMatchObject({ name: 'FfmpegAbortedError' })
+    await expect(fs.rm(source)).resolves.toBeUndefined()
+  })
 })
 
 describe('Opus round trip', { timeout: 30_000 }, () => {

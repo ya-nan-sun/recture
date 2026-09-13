@@ -121,9 +121,26 @@ export function runFfmpeg(args: string[], options: RunFfmpegOptions = {}): Promi
       if (error) reject(error)
       else resolve({ stderr: head + tail })
     }
+    let aborted = false
     const onAbort = (): void => {
+      aborted = true
+      signal?.removeEventListener('abort', onAbort)
+      if (child.exitCode !== null || child.signalCode !== null) {
+        settle(new FfmpegAbortedError())
+        return
+      }
+      // Discard output still waiting to be read, so a paused pipe cannot keep
+      // the process alive.
+      child.stdout?.destroy()
       child.kill()
-      settle(new FfmpegAbortedError())
+      // Reject only once the process has actually exited. Windows keeps its
+      // files open for a moment after it is told to stop, and callers delete
+      // or reuse those files as soon as this rejects.
+      const fallback = setTimeout(() => settle(new FfmpegAbortedError()), 5000)
+      child.once('exit', () => {
+        clearTimeout(fallback)
+        settle(new FfmpegAbortedError())
+      })
     }
     signal?.addEventListener('abort', onAbort, { once: true })
 
@@ -141,8 +158,12 @@ export function runFfmpeg(args: string[], options: RunFfmpegOptions = {}): Promi
       stream.on('error', () => undefined)
     }
 
-    child.on('error', (err) => settle(new FfmpegError(`Could not run ffmpeg: ${err.message}`)))
+    child.on('error', (err) => {
+      if (!aborted) settle(new FfmpegError(`Could not run ffmpeg: ${err.message}`))
+    })
     child.on('close', (code) => {
+      // A cancelled run settles in onAbort, once the process has exited.
+      if (aborted) return
       if (code === 0) settle(null)
       else settle(new FfmpegError(describeFfmpegFailure(head + tail, code)))
     })
