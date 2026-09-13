@@ -9,13 +9,15 @@ import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import * as fs from 'node:fs/promises'
 import type {
   AppSettings,
+  Bookmark,
   ClassRecord,
   ExportOptions,
   GlossaryTerm,
   LectureRecord,
   ProviderAvailability,
   SuggestionStatus,
-  TranscriptFile
+  TranscriptFile,
+  TranscriptionQueueSnapshot
 } from '@shared/types'
 import { CLIPBOARD_SOFT_LIMIT, DEFAULT_EXPORT_OPTIONS } from '@shared/types'
 import { AUDIO_PROTOCOL, IPC } from '@shared/ipc'
@@ -37,7 +39,8 @@ import {
 } from './library'
 import type { RecordingController } from './recordingController'
 import { rescanLibrary, type RescanReport } from './rescan'
-import type { HotkeyManager, HotkeyStatus } from './hotkey'
+import type { HotkeyManager, HotkeyName, HotkeyStatus } from './hotkey'
+import { readBookmarks, removeBookmark, updateBookmark } from './bookmarks'
 import { transcriptToMarkdown } from './export/markdown'
 import { transcriptToPdf } from './export/pdf'
 import type { BatchTranscriber } from './transcription/types'
@@ -113,22 +116,28 @@ export function registerIpc(deps: IpcDeps): void {
     return result.filePaths[0]
   })
 
-  ipcMain.handle(IPC.settingsHotkeyStatus, (): HotkeyStatus => {
+  const hotkeyName = (value: unknown): HotkeyName => (value === 'bookmark' ? 'bookmark' : 'record')
+  const storedHotkey = (name: HotkeyName): string =>
+    name === 'bookmark' ? settings.get().bookmarkHotkey : settings.get().recordHotkey
+
+  ipcMain.handle(IPC.settingsHotkeyStatus, (_e, name?: string): HotkeyStatus => {
+    const which = hotkeyName(name)
     const manager = deps.hotkey()
     return manager
-      ? manager.getStatus()
-      : { accelerator: settings.get().recordHotkey, registered: false, detail: 'Shortcuts are unavailable.' }
+      ? manager.getStatus(which)
+      : { accelerator: storedHotkey(which), registered: false, detail: 'Shortcuts are unavailable.' }
   })
 
   // Applies immediately rather than on next launch, and reports whether the
   // combination was actually accepted.
-  ipcMain.handle(IPC.settingsSetHotkey, (_e, accelerator: string): HotkeyStatus => {
+  ipcMain.handle(IPC.settingsSetHotkey, (_e, accelerator: string, name?: string): HotkeyStatus => {
+    const which = hotkeyName(name)
     const manager = deps.hotkey()
     if (!manager) throw new Error('Shortcuts are unavailable in this session.')
-    const status = manager.apply(String(accelerator ?? ''))
+    const status = manager.apply(which, String(accelerator ?? ''))
     // Persist whatever the student typed, so a rejected shortcut is still shown
     // back to them to fix rather than silently reverting.
-    settings.update({ recordHotkey: status.accelerator })
+    settings.update(which === 'bookmark' ? { bookmarkHotkey: status.accelerator } : { recordHotkey: status.accelerator })
     return status
   })
 
@@ -170,16 +179,29 @@ export function registerIpc(deps: IpcDeps): void {
     if (controller.isRecording) throw new Error(message)
   }
 
+  /** A running transcriber holds a lecture's files open; moving them under it breaks the pass. */
+  const assertNoTranscriptionRunningIn = (classId: string, message: string): void => {
+    const running = controller.queue.snapshot().running
+    if (!running) return
+    if (repos.lectures.get(running.lectureId)?.classId === classId) throw new Error(message)
+  }
+
   ipcMain.handle(IPC.classRename, async (_e, id: string, name: string): Promise<ClassRecord> => {
     const klass = requireClass(id)
     if (!name?.trim()) throw new Error('A class name is required.')
     assertNotRecording('Stop the current recording before renaming this class.')
+    assertNoTranscriptionRunningIn(klass.id, 'Wait for the transcription in progress to finish before renaming this class.')
     return renameClass(repos, settings.get().rootDir, klass, name)
   })
 
   ipcMain.handle(IPC.classDelete, async (_e, id: string, deleteFiles = false) => {
     const klass = requireClass(id)
     assertNotRecording('Stop the current recording before removing this class.')
+    // Stop any transcription of this class's lectures first: a transcriber still
+    // holding files open would make deleting the folder fail on Windows.
+    for (const lecture of repos.lectures.listByClass(klass.id)) {
+      await controller.cancelTranscription(lecture.id)
+    }
     // Files are kept unless the caller explicitly asks otherwise: losing a
     // term's recordings to a stray click is not a recoverable mistake.
     return deleteClass(repos, settings.get().rootDir, klass, Boolean(deleteFiles))
@@ -207,6 +229,9 @@ export function registerIpc(deps: IpcDeps): void {
     if (controller.currentLectureId === lecture.id) {
       throw new Error('Stop the recording before renaming this lecture.')
     }
+    if (controller.queue.isRunning(lecture.id)) {
+      throw new Error('Wait for this lecture to finish transcribing before renaming it.')
+    }
     // Renames the folder too, so the on-disk name keeps matching the title.
     return renameLecture(repos, requireClass(lecture.classId), lecture, title)
   })
@@ -216,6 +241,9 @@ export function registerIpc(deps: IpcDeps): void {
     if (controller.currentLectureId === lecture.id) {
       throw new Error('Stop the recording before moving this lecture.')
     }
+    if (controller.queue.isRunning(lecture.id)) {
+      throw new Error('Wait for this lecture to finish transcribing before moving it.')
+    }
     return moveLecture(repos, lecture, requireClass(targetClassId))
   })
 
@@ -224,6 +252,7 @@ export function registerIpc(deps: IpcDeps): void {
     if (controller.currentLectureId === lecture.id) {
       throw new Error('Stop the recording before removing this lecture.')
     }
+    await controller.cancelTranscription(lecture.id)
     return deleteLecture(repos, settings.get().rootDir, lecture, Boolean(deleteFiles))
   })
 
@@ -314,6 +343,36 @@ export function registerIpc(deps: IpcDeps): void {
 
   ipcMain.handle(IPC.recordingState, () => controller.getState())
 
+  ipcMain.handle(IPC.recordingPause, async () => controller.pause())
+  ipcMain.handle(IPC.recordingResume, () => controller.resume())
+  ipcMain.handle(IPC.recordingBookmark, async (_e, note?: string): Promise<Bookmark> =>
+    controller.addBookmark(typeof note === 'string' ? note : '')
+  )
+
+  // --- bookmarks -----------------------------------------------------------
+
+  ipcMain.handle(IPC.bookmarksList, async (_e, lectureId: string): Promise<Bookmark[]> =>
+    readBookmarks(requireLecture(lectureId).dirPath)
+  )
+
+  ipcMain.handle(
+    IPC.bookmarksUpdate,
+    async (_e, lectureId: string, id: string, note: string): Promise<Bookmark[]> =>
+      updateBookmark(requireLecture(lectureId).dirPath, String(id), String(note ?? ''))
+  )
+
+  ipcMain.handle(IPC.bookmarksRemove, async (_e, lectureId: string, id: string): Promise<Bookmark[]> =>
+    removeBookmark(requireLecture(lectureId).dirPath, String(id))
+  )
+
+  // --- transcription queue -------------------------------------------------
+
+  ipcMain.handle(IPC.transcriptionQueue, (): TranscriptionQueueSnapshot => controller.queueSnapshot())
+
+  ipcMain.handle(IPC.transcriptionCancel, async (_e, lectureId: string): Promise<boolean> =>
+    controller.cancelTranscription(requireLecture(lectureId).id)
+  )
+
   // Audio frames use `send`, not `invoke`: they are high-frequency and
   // fire-and-forget, and a per-frame round trip would add needless latency.
   ipcMain.on(IPC.recordingAudio, (_e, chunk: ArrayBuffer) => {
@@ -331,12 +390,11 @@ export function registerIpc(deps: IpcDeps): void {
     loadTranscript(requireLecture(lectureId))
   )
 
-  ipcMain.handle(IPC.transcriptRetry, async (_e, lectureId: string): Promise<void> => {
-    const lecture = requireLecture(lectureId)
-    const klass = requireClass(lecture.classId)
-    if (controller.isRecording) throw new Error('Stop the current recording before retrying transcription.')
-    void controller.transcribe(klass, lecture)
-  })
+  // Recording and transcription are independent, so a retry is fine while
+  // another lecture is recording: it simply joins the queue.
+  ipcMain.handle(IPC.transcriptRetry, async (_e, lectureId: string) =>
+    controller.requestTranscription(requireLecture(lectureId).id, 'retry')
+  )
 
   ipcMain.handle(
     IPC.transcriptSetSuggestion,

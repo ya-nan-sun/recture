@@ -3,10 +3,11 @@
  * protocol, and startup crash recovery.
  */
 
-import { app, BrowserWindow, globalShortcut, protocol, net, shell } from 'electron'
+import { app, BrowserWindow, globalShortcut, Notification, protocol, net, shell } from 'electron'
 import * as path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { AUDIO_PROTOCOL, IPC } from '@shared/ipc'
+import { formatClock } from '@shared/naming'
 import { openDatabase } from './db/database'
 import { createRepos } from './db/repos'
 import { SettingsStore } from './storage/settings'
@@ -16,7 +17,7 @@ import { ensureDir, isInside } from './storage/paths'
 import { classesRoot } from './storage/paths'
 import { RecordingController, broadcaster } from './recordingController'
 import { registerClipboardSection, registerIpc } from './ipc'
-import { recoverAllInterrupted } from './library'
+import { recoverAllInterrupted, recoverStrandedTranscriptions } from './library'
 import { LibraryWatcher, describeRescan, rescanLibrary, reportIsEmpty } from './rescan'
 import { DeepgramBatchTranscriber } from './transcription/deepgramBatch'
 import { WhisperLocalTranscriber } from './transcription/whisperLocal'
@@ -35,6 +36,9 @@ let watcherRef: LibraryWatcher | null = null
 let hotkeyRef: HotkeyManager | null = null
 
 const isDev = !app.isPackaged
+
+// Lets Windows attribute notifications (such as a bookmark confirmation) to Recture.
+if (process.platform === 'win32') app.setAppUserModelId('app.recture')
 
 function rendererUrl(): { url?: string; file?: string } {
   const devServer = process.env.ELECTRON_RENDERER_URL
@@ -183,18 +187,51 @@ app.whenReady().then(async () => {
   )
   await watcherRef.start()
 
+  // Transcriptions the app was in the middle of when it last closed carry on,
+  // instead of sitting on "Transcribing" forever with no way to retry.
+  const stranded = await recoverStrandedTranscriptions(repos).catch(() => [])
+  for (const lecture of stranded) {
+    try {
+      controller.requestTranscription(lecture.id, 'resumed')
+    } catch {
+      // A lecture that cannot be queued keeps its status, and the Retry button.
+    }
+  }
+
   // Record from anywhere: the student should not have to find the window when
   // the professor starts talking.
-  hotkeyRef = new HotkeyManager(() => {
-    broadcast(IPC.evtRequestToggleRecord, { source: 'hotkey' })
-    if (!controller.isRecording && mainWindow) {
-      mainWindow.show()
-      mainWindow.focus()
+  hotkeyRef = new HotkeyManager({
+    record: () => {
+      broadcast(IPC.evtRequestToggleRecord, { source: 'hotkey' })
+      if (!controller.isRecording && mainWindow) {
+        mainWindow.show()
+        mainWindow.focus()
+      }
+    },
+    // Bookmarks are added in the main process directly, so they work while the
+    // student is in another app with the window nowhere in sight.
+    bookmark: () => {
+      if (!controller.isRecording) return
+      void controller
+        .addBookmark('')
+        .then((bookmark) => {
+          if (Notification.isSupported()) {
+            new Notification({
+              title: 'Bookmarked',
+              body: `At ${formatClock(bookmark.atSec)} in the lecture.`,
+              silent: true
+            }).show()
+          }
+        })
+        .catch(() => undefined)
     }
   })
-  const hotkeyStatus = hotkeyRef.apply(settings.get().recordHotkey)
-  if (!hotkeyStatus.registered) {
-    console.warn(`Record shortcut inactive: ${hotkeyStatus.detail}`)
+  for (const [name, accelerator] of [
+    ['record', settings.get().recordHotkey],
+    ['bookmark', settings.get().bookmarkHotkey]
+  ] as const) {
+    const status = hotkeyRef.apply(name, accelerator)
+    if (!status.registered) console.warn(`${name} shortcut inactive: ${status.detail}`)
   }
 
   app.on('activate', () => {

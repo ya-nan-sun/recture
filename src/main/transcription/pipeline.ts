@@ -33,7 +33,7 @@ import { concatWavFiles, verifySegmentFile } from '../audio/wav'
 import { segmentAbsolutePath } from '../audio/recordingSession'
 import type { Repos } from '../db/repos'
 import type { BatchTranscriber } from './types'
-import { PermanentTranscriptionError } from './types'
+import { NoUsableAudioError, throwIfAborted } from './types'
 import { DEFAULT_RETRY, withRetry } from './retry'
 
 export interface VerificationOutcome {
@@ -90,6 +90,7 @@ export async function runFinalPass(
   ): void => onProgress({ lectureId: lecture.id, phase, message, progress, attempt })
 
   // --- 1. verify -----------------------------------------------------------
+  throwIfAborted(deps.signal)
   report('verifying', 'Verifying audio segments…', 0)
   const verification = await verifyLectureSegments(repos, lecture)
 
@@ -105,7 +106,7 @@ export async function runFinalPass(
         : 'No audio segments were recorded for this lecture.'
     repos.lectures.setStatus(lecture.id, 'needs_attention', detail)
     report('failed', detail)
-    throw new PermanentTranscriptionError(detail)
+    throw new NoUsableAudioError(detail)
   }
 
   if (verification.corrupt.length > 0) {
@@ -118,6 +119,7 @@ export async function runFinalPass(
   }
 
   // --- 2. assemble ---------------------------------------------------------
+  throwIfAborted(deps.signal)
   report('assembling', 'Assembling verified audio…', 0.1)
   repos.lectures.setStatus(lecture.id, 'assembling', null)
 
@@ -130,6 +132,7 @@ export async function runFinalPass(
   )
 
   // --- 3. transcribe -------------------------------------------------------
+  throwIfAborted(deps.signal)
   repos.lectures.setStatus(lecture.id, 'transcribing', null)
   const keyterms = glossaryKeyterms(glossary)
 
@@ -154,6 +157,7 @@ export async function runFinalPass(
     },
     {
       ...DEFAULT_RETRY,
+      signal: deps.signal,
       onRetry: (attempt, delayMs, error) =>
         report(
           'transcribing',
@@ -236,6 +240,14 @@ export async function handleFinalPassFailure(
   error: Error,
   onProgress: (progress: TranscriptionProgress) => void
 ): Promise<void> {
+  if (error instanceof NoUsableAudioError) {
+    // The pipeline already marked this lecture needs_attention with the real
+    // reason. Overwriting that with "the recording is safe, retry any time"
+    // would be untrue: there is no usable audio to retry with.
+    onProgress({ lectureId: lecture.id, phase: 'failed', message: error.message, progress: null })
+    return
+  }
+
   const paths = lecturePaths(lecture.dirPath)
   const hasLiveDraft = await fs
     .stat(paths.liveTranscript)

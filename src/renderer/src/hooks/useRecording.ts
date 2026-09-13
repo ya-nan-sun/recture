@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { LiveTranscriptUpdate, RecordingState, TranscriptionProgress } from '@shared/types'
+import type {
+  Bookmark,
+  LiveTranscriptUpdate,
+  RecordingState,
+  TranscriptionProgress,
+  TranscriptionQueueSnapshot
+} from '@shared/types'
 import { startCapture, type MicCapture, type MicLevel } from '../audio/recorder'
 
 export interface LiveLine {
@@ -9,8 +15,13 @@ export interface LiveLine {
   start: number
 }
 
+const EMPTY_QUEUE: TranscriptionQueueSnapshot = { running: null, waiting: [] }
+
+const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
 /**
- * Owns microphone capture for the window.
+ * Owns microphone capture for the window, plus the recording and transcription
+ * state the UI shows.
  *
  * The main process is started first and stopped last: if opening the mic
  * fails, the session it just created is torn down rather than left as a
@@ -21,15 +32,18 @@ export function useRecording(onError: (message: string) => void) {
   const [level, setLevel] = useState<MicLevel>({ peak: 0, rms: 0 })
   const [liveLines, setLiveLines] = useState<LiveLine[]>([])
   const [progress, setProgress] = useState<TranscriptionProgress | null>(null)
+  const [queue, setQueue] = useState<TranscriptionQueueSnapshot>(EMPTY_QUEUE)
   const [starting, setStarting] = useState(false)
   const captureRef = useRef<MicCapture | null>(null)
 
   useEffect(() => {
     void window.recture.recording.state().then(setState)
+    void window.recture.transcription.queue().then(setQueue)
 
     const offState = window.recture.events.onRecordingState(setState)
     const offError = window.recture.events.onRecordingError((payload) => onError(payload.message))
     const offProgress = window.recture.events.onTranscriptionProgress((p: TranscriptionProgress) => setProgress(p))
+    const offQueue = window.recture.events.onTranscriptionQueue(setQueue)
     const offLive = window.recture.events.onLiveTranscript((update: LiveTranscriptUpdate) => {
       setLiveLines((prev) => {
         const next = [...prev]
@@ -52,6 +66,7 @@ export function useRecording(onError: (message: string) => void) {
       offState()
       offError()
       offProgress()
+      offQueue()
       offLive()
     }
   }, [onError])
@@ -68,7 +83,6 @@ export function useRecording(onError: (message: string) => void) {
       if (captureRef.current || starting) return
       setStarting(true)
       setLiveLines([])
-      setProgress(null)
 
       let started = false
       try {
@@ -85,7 +99,7 @@ export function useRecording(onError: (message: string) => void) {
         // Never leave a half-open session behind.
         if (started) await window.recture.recording.stop().catch(() => undefined)
         await stopCapture()
-        onError(err instanceof Error ? err.message : String(err))
+        onError(messageOf(err))
       } finally {
         setStarting(false)
       }
@@ -101,10 +115,38 @@ export function useRecording(onError: (message: string) => void) {
       setState(await window.recture.recording.state())
       return lectureId
     } catch (err) {
-      onError(err instanceof Error ? err.message : String(err))
+      onError(messageOf(err))
       return null
     }
   }, [onError, stopCapture])
+
+  const pause = useCallback(async (): Promise<void> => {
+    try {
+      setState(await window.recture.recording.pause())
+    } catch (err) {
+      onError(messageOf(err))
+    }
+  }, [onError])
+
+  const resume = useCallback(async (): Promise<void> => {
+    try {
+      setState(await window.recture.recording.resume())
+    } catch (err) {
+      onError(messageOf(err))
+    }
+  }, [onError])
+
+  const bookmark = useCallback(
+    async (note = ''): Promise<Bookmark | null> => {
+      try {
+        return await window.recture.recording.bookmark(note)
+      } catch (err) {
+        onError(messageOf(err))
+        return null
+      }
+    },
+    [onError]
+  )
 
   useEffect(() => {
     return () => {
@@ -117,9 +159,14 @@ export function useRecording(onError: (message: string) => void) {
     level,
     liveLines,
     progress,
+    queue,
     starting,
     isRecording: Boolean(state?.active),
+    isPaused: Boolean(state?.paused),
     start,
-    stop
+    stop,
+    pause,
+    resume,
+    bookmark
   }
 }

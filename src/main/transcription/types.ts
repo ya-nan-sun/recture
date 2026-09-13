@@ -29,7 +29,7 @@ export interface BatchTranscriber {
 
 /** Thrown for conditions where retrying cannot help (bad key, bad audio). */
 export class PermanentTranscriptionError extends Error {
-  override readonly name = 'PermanentTranscriptionError'
+  override readonly name: string = 'PermanentTranscriptionError'
 }
 
 /** Thrown for conditions worth retrying (network, 5xx, rate limit). */
@@ -41,4 +41,21 @@ export class TransientTranscriptionError extends Error {
   ) {
     super(message)
   }
+}
+
+/**
+ * The job was stopped on purpose: the app is quitting or the lecture was
+ * cancelled. Not a failure, so nothing is marked broken and nothing retries.
+ */
+export class TranscriptionAbortedError extends PermanentTranscriptionError {
+  override readonly name: string = 'TranscriptionAbortedError'
+}
+
+/** None of the lecture's audio survived verification, so there is nothing to transcribe. */
+export class NoUsableAudioError extends PermanentTranscriptionError {
+  override readonly name: string = 'NoUsableAudioError'
+}
+
+export function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new TranscriptionAbortedError('Transcription was stopped.')
 }

@@ -40,6 +40,7 @@ export function defaultSettings(): AppSettings {
     whisperComputeType: 'int8',
     language: 'en',
     recordHotkey: 'CommandOrControl+Shift+R',
+    bookmarkHotkey: 'Alt+Shift+B',
     correctionConfidenceThreshold: 0.85,
     correctionSimilarityThreshold: 0.74,
     acknowledgedCloudNotice: false

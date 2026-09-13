@@ -14,7 +14,12 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import type { ProviderAvailability, TranscriptSegment } from '@shared/types'
 import type { BatchTranscriber, TranscriptionRequest, TranscriptionResult } from './types'
-import { PermanentTranscriptionError, TransientTranscriptionError } from './types'
+import {
+  PermanentTranscriptionError,
+  TransientTranscriptionError,
+  TranscriptionAbortedError,
+  throwIfAborted
+} from './types'
 
 const execFileAsync = promisify(execFile)
 
@@ -96,6 +101,8 @@ export class WhisperLocalTranscriber implements BatchTranscriber {
   }
 
   async transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
+    // Never start Python for a job that has already been stopped.
+    throwIfAborted(request.signal)
     const python = await findPython(this.options.pythonPath())
     if (!python) throw new PermanentTranscriptionError('Python was not found on this system.')
 
@@ -126,6 +133,14 @@ export class WhisperLocalTranscriber implements BatchTranscriber {
         stdio: ['ignore', 'pipe', 'pipe']
       })
 
+      // Run below normal priority, so a long transcription never starves a
+      // recording happening at the same time.
+      try {
+        if (child.pid) os.setPriority(child.pid, os.constants.priority.PRIORITY_BELOW_NORMAL)
+      } catch {
+        // Not permitted everywhere; transcription still works at normal priority.
+      }
+
       const segments: TranscriptSegment[] = []
       let durationSec = 0
       let language = request.language
@@ -135,9 +150,15 @@ export class WhisperLocalTranscriber implements BatchTranscriber {
       let stdoutTail = ''
       let stderrTail = ''
 
+      // Stopping must actually end the Python process: quitting the app used to
+      // leave it transcribing, at full CPU, with no window open.
       const onAbort = (): void => {
         child.kill()
-        reject(new PermanentTranscriptionError('Transcription was cancelled.'))
+        reject(new TranscriptionAbortedError('Transcription was stopped.'))
+      }
+      if (request.signal?.aborted) {
+        onAbort()
+        return
       }
       request.signal?.addEventListener('abort', onAbort, { once: true })
 

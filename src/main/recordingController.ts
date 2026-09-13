@@ -1,7 +1,11 @@
 /**
  * Owns the lifecycle of a recording: one RecordingSession writing audio to
- * disk, an optional Deepgram live socket for the on-screen draft, and the
- * final pass that runs the moment recording stops.
+ * disk, and an optional Deepgram live socket for the on-screen draft.
+ *
+ * Transcription is deliberately not part of the recording lifecycle. Stopping
+ * hands the lecture to the transcription queue and returns at once, so the
+ * student can start their next lecture immediately instead of waiting for the
+ * previous one to finish transcribing.
  *
  * The live socket is strictly best-effort. Nothing it does can affect what
  * lands on disk.
@@ -10,6 +14,7 @@
 import type { BrowserWindow } from 'electron'
 import type {
   AppSettings,
+  Bookmark,
   ClassRecord,
   LectureRecord,
   LiveStatus,
@@ -18,13 +23,22 @@ import type {
   TranscriptFile,
   TranscriptionProgress
 } from '@shared/types'
+import { IPC } from '@shared/ipc'
 import { glossaryKeyterms } from '@shared/correction'
-import { lecturePaths, writeJsonAtomic } from './storage/paths'
+import { lecturePaths, readJson, writeJsonAtomic } from './storage/paths'
 import { RecordingSession } from './audio/recordingSession'
 import type { Repos } from './db/repos'
 import { DeepgramLiveSession } from './transcription/deepgramLive'
 import type { BatchTranscriber } from './transcription/types'
 import { handleFinalPassFailure, runFinalPass } from './transcription/pipeline'
+import {
+  TranscriptionQueue,
+  type AbortReason,
+  type QueueSnapshot,
+  type TranscriptionJob,
+  type TranscriptionJobReason
+} from './transcription/queue'
+import { addBookmark } from './bookmarks'
 import { syncGlossaryToDisk } from './library'
 
 export interface ControllerDeps {
@@ -44,9 +58,17 @@ export class RecordingController {
   private activeClass: ClassRecord | null = null
   private activeLecture: LectureRecord | null = null
   private startedAt: Date | null = null
-  private finalizing = false
+  private pausedAt: Date | null = null
+  private pausedMs = 0
+  private sessionBookmarks: Bookmark[] = []
+  readonly queue: TranscriptionQueue
 
-  constructor(private readonly deps: ControllerDeps) {}
+  constructor(private readonly deps: ControllerDeps) {
+    this.queue = new TranscriptionQueue({
+      run: (job, signal) => this.runJob(job, signal),
+      onChange: (snapshot) => this.deps.broadcast(IPC.evtTranscriptionQueue, snapshot)
+    })
+  }
 
   get isRecording(): boolean {
     return this.session !== null && !this.session.isStopped
@@ -66,26 +88,35 @@ export class RecordingController {
       elapsedSec: this.session?.durationSec ?? 0,
       segmentsWritten: this.session?.segmentCount ?? 0,
       bytesWritten: this.session?.totalBytes ?? 0,
-      live: this.liveStatus
+      live: this.liveStatus,
+      paused: this.session?.isPaused ?? false,
+      pausedMs: this.pausedMs,
+      pausedAt: this.pausedAt?.toISOString() ?? null,
+      offsetSec: this.session?.offsetSec ?? 0,
+      bookmarks: [...this.sessionBookmarks]
     }
   }
 
+  queueSnapshot(): QueueSnapshot {
+    return this.queue.snapshot()
+  }
+
   private emitState(): void {
-    this.deps.broadcast('recording:state', this.getState())
+    this.deps.broadcast(IPC.evtRecordingState, this.getState())
   }
 
   async start(klass: ClassRecord, lecture: LectureRecord): Promise<RecordingState> {
     if (this.isRecording) throw new Error('A recording is already in progress.')
-    if (this.finalizing) throw new Error('The previous lecture is still being finalized.')
+    // Adding audio to a lecture that is queued or mid-pass would transcribe a
+    // moving target.
+    if (this.queue.has(lecture.id)) {
+      throw new Error(
+        'That lecture is waiting to be transcribed. Record into a new lecture, or cancel its transcription first.'
+      )
+    }
 
     const settings = this.deps.getSettings()
-    this.activeClass = klass
-    this.activeLecture = lecture
-    this.startedAt = new Date()
-    this.liveCursor = 0
-    this.liveFinals = []
-
-    this.session = new RecordingSession({
+    const session: RecordingSession = new RecordingSession({
       lectureId: lecture.id,
       lectureDir: lecture.dirPath,
       segmentSeconds: settings.segmentSeconds,
@@ -101,8 +132,8 @@ export class RecordingController {
           verified: 'pending'
         })
         this.deps.repos.lectures.update(lecture.id, {
-          segmentCount: this.session?.segmentCount ?? 0,
-          durationSec: this.session?.durationSec ?? 0
+          segmentCount: session.segmentCount,
+          durationSec: session.durationSec
         })
         this.emitState()
       },
@@ -110,20 +141,70 @@ export class RecordingController {
         // A write failure is the one thing the student must know about now,
         // while they can still switch devices or free up disk space.
         this.deps.repos.lectures.setStatus(lecture.id, 'needs_attention', `Audio write failed: ${error.message}`)
-        this.deps.broadcast('recording:error', { lectureId: lecture.id, message: error.message })
+        this.deps.broadcast(IPC.evtRecordingError, { lectureId: lecture.id, message: error.message })
         this.emitState()
       }
     })
 
-    await this.session.start()
-    this.deps.repos.lectures.setStatus(lecture.id, 'recording', null)
+    // Only adopt the session once it has opened its files, so a failed start
+    // leaves no half-initialised recording behind.
+    await session.start()
 
-    this.startLive(klass, settings)
+    this.session = session
+    this.activeClass = klass
+    this.activeLecture = lecture
+    this.startedAt = new Date()
+    this.pausedAt = null
+    this.pausedMs = 0
+    this.sessionBookmarks = []
+    this.liveCursor = 0
+    this.liveFinals = []
+
+    this.deps.repos.lectures.setStatus(lecture.id, 'recording', null)
+    this.startLive(klass, settings, session.offsetSec)
     this.emitState()
     return this.getState()
   }
 
-  private startLive(klass: ClassRecord, settings: AppSettings): void {
+  /** Pause for a break without ending the lecture. */
+  async pause(): Promise<RecordingState> {
+    const session = this.session
+    if (!session || !this.isRecording) throw new Error('No recording is in progress.')
+    if (!session.isPaused) {
+      this.pausedAt = new Date()
+      await session.pause()
+      this.emitState()
+    }
+    return this.getState()
+  }
+
+  resume(): RecordingState {
+    const session = this.session
+    if (!session || !this.isRecording) throw new Error('No recording is in progress.')
+    if (session.isPaused) {
+      session.resume()
+      if (this.pausedAt) this.pausedMs += Math.max(0, Date.now() - this.pausedAt.getTime())
+      this.pausedAt = null
+      this.emitState()
+    }
+    return this.getState()
+  }
+
+  /** Flag the current moment of the lecture, e.g. "this is on the exam". */
+  async addBookmark(note = ''): Promise<Bookmark> {
+    const session = this.session
+    const lecture = this.activeLecture
+    if (!session || !lecture || !this.isRecording) {
+      throw new Error('Bookmarks can only be added while recording.')
+    }
+    const bookmark = await addBookmark(lecture.dirPath, session.durationSec, note)
+    this.sessionBookmarks.push(bookmark)
+    this.deps.broadcast(IPC.evtBookmarkAdded, { lectureId: lecture.id, bookmark })
+    this.emitState()
+    return bookmark
+  }
+
+  private startLive(klass: ClassRecord, settings: AppSettings, offsetSec: number): void {
     if (settings.liveProvider !== 'deepgram-live') {
       this.liveStatus = { kind: 'disabled' }
       return
@@ -152,8 +233,10 @@ export class RecordingController {
           // Interim results share the previous cursor so the renderer replaces
           // them in place; a final result advances it.
           cursor: this.liveCursor,
-          start: result.start,
-          end: result.end,
+          // Deepgram times from the start of this stream. When recording into a
+          // lecture that already had audio, its clock starts where that ended.
+          start: result.start + offsetSec,
+          end: result.end + offsetSec,
           text: result.text,
           isFinal: result.isFinal
         }
@@ -161,24 +244,25 @@ export class RecordingController {
           this.liveFinals.push(update)
           this.liveCursor += 1
         }
-        this.deps.broadcast('recording:live-transcript', update)
+        this.deps.broadcast(IPC.evtLiveTranscript, update)
       }
     })
     this.live.connect()
   }
 
-  /** One PCM frame from the renderer. */
+  /** One PCM frame from the renderer. Discarded while paused. */
   writeAudio(chunk: ArrayBuffer): void {
-    if (!this.session || this.session.isStopped) return
+    const session = this.session
+    if (!session || session.isStopped || session.isPaused) return
     const buffer = Buffer.from(chunk)
-    this.session.write(buffer)
+    session.write(buffer)
     this.live?.send(buffer)
   }
 
   /**
-   * Stop recording and kick off the final pass. Resolves once the audio is
-   * safely closed out — the final pass continues in the background and reports
-   * through `transcription:progress`.
+   * Stop recording and queue the final pass. Resolves once the audio is safely
+   * closed out; transcription continues independently and reports through
+   * `transcription:progress` and `transcription:queue`.
    */
   async stop(): Promise<{ lectureId: string }> {
     const session = this.session
@@ -195,24 +279,46 @@ export class RecordingController {
     this.deps.repos.lectures.update(lecture.id, {
       durationSec,
       segmentCount: session.segmentCount,
-      status: 'transcribing'
+      status: 'queued',
+      statusDetail: null
     })
+    await this.saveLiveDraft(klass, lecture, durationSec, session.offsetSec)
 
-    await this.saveLiveDraft(klass, lecture, durationSec)
-
-    this.session = null
+    // The recording is over. Clear it now, not after transcription, so the
+    // next lecture can start straight away.
+    this.clearRecordingState()
     this.emitState()
 
-    // Deliberately not awaited: the UI returns to the lecture view while the
-    // final pass runs.
-    void this.runFinalPassInBackground(klass, lecture)
+    this.queue.enqueue({ lectureId: lecture.id, reason: 'recorded' })
     return { lectureId: lecture.id }
   }
 
+  private clearRecordingState(): void {
+    this.session = null
+    this.activeClass = null
+    this.activeLecture = null
+    this.startedAt = null
+    this.pausedAt = null
+    this.pausedMs = 0
+    this.sessionBookmarks = []
+  }
+
   /** Persist the live draft as a fallback before the final pass replaces it. */
-  private async saveLiveDraft(klass: ClassRecord, lecture: LectureRecord, durationSec: number): Promise<void> {
+  private async saveLiveDraft(
+    klass: ClassRecord,
+    lecture: LectureRecord,
+    durationSec: number,
+    offsetSec: number
+  ): Promise<void> {
     if (this.liveFinals.length === 0) return
+    const paths = lecturePaths(lecture.dirPath)
+    // When recording into a lecture that already had audio, keep the draft of
+    // that earlier audio rather than replacing it with only this session's.
+    const previous = offsetSec > 0 ? await readJson<TranscriptFile>(paths.liveTranscript) : null
+    const earlier = (previous?.segments ?? []).filter((s) => s.end <= offsetSec + 0.001)
     const now = new Date().toISOString()
+    const stamp = Date.parse(now)
+
     const draft: TranscriptFile = {
       version: 1,
       lectureId: lecture.id,
@@ -227,68 +333,125 @@ export class RecordingController {
         model: this.deps.getSettings().deepgramLiveModel,
         language: this.deps.getSettings().language
       },
-      createdAt: now,
+      createdAt: previous?.createdAt ?? now,
       updatedAt: now,
-      segments: this.liveFinals.map((u, i) => ({
-        id: `live-${i}`,
-        start: u.start,
-        end: u.end,
-        speaker: null,
-        text: u.text,
-        words: u.text.split(/\s+/).map((word, k, arr) => {
-          const span = (u.end - u.start) / Math.max(1, arr.length)
-          return { word, start: u.start + k * span, end: u.start + (k + 1) * span, confidence: 1 }
-        })
-      })),
+      segments: [
+        ...earlier,
+        ...this.liveFinals.map((u, i) => ({
+          id: `live-${stamp}-${i}`,
+          start: u.start,
+          end: u.end,
+          speaker: null,
+          text: u.text,
+          words: u.text
+            .split(' ')
+            .filter(Boolean)
+            .map((word, k, arr) => {
+              const span = (u.end - u.start) / Math.max(1, arr.length)
+              return { word, start: u.start + k * span, end: u.start + (k + 1) * span, confidence: 1 }
+            })
+        }))
+      ],
       suggestions: [],
       excludedAudioSegments: []
     }
-    await writeJsonAtomic(lecturePaths(lecture.dirPath).liveTranscript, draft).catch(() => undefined)
+    await writeJsonAtomic(paths.liveTranscript, draft).catch(() => undefined)
   }
 
-  private async runFinalPassInBackground(klass: ClassRecord, lecture: LectureRecord): Promise<void> {
-    this.finalizing = true
-    try {
-      await this.transcribe(klass, lecture)
-    } finally {
-      this.finalizing = false
-      this.activeClass = null
-      this.activeLecture = null
-      this.startedAt = null
-      this.emitState()
+  /**
+   * Put a lecture in the transcription queue. Safe to call for a lecture that
+   * is already queued or running: it is never transcribed (or billed) twice.
+   */
+  requestTranscription(
+    lectureId: string,
+    reason: TranscriptionJobReason = 'retry'
+  ): { accepted: boolean; position: number } {
+    if (this.activeLecture?.id === lectureId) {
+      throw new Error('Stop recording this lecture before transcribing it.')
     }
+    const lecture = this.deps.repos.lectures.get(lectureId)
+    if (!lecture) throw new Error('That lecture no longer exists.')
+    if (this.queue.has(lectureId)) {
+      return { accepted: false, position: this.queue.position(lectureId) }
+    }
+
+    // A resumed job keeps the note explaining why it restarted.
+    this.deps.repos.lectures.setStatus(lectureId, 'queued', reason === 'resumed' ? lecture.statusDetail : null)
+    const result = this.queue.enqueue({ lectureId, reason })
+    this.deps.broadcast(IPC.evtLibraryChanged, { lectureId })
+    return result
   }
 
-  /** Run (or re-run) the final pass for a lecture. */
-  async transcribe(klass: ClassRecord, lecture: LectureRecord): Promise<void> {
+  /**
+   * Take a lecture out of the queue, stopping it if it is mid-pass. Resolves
+   * once a running transcriber has let go of the lecture's files.
+   */
+  async cancelTranscription(lectureId: string): Promise<boolean> {
+    const wasWaiting = this.queue.has(lectureId) && !this.queue.isRunning(lectureId)
+    const cancelled = await this.queue.cancel(lectureId)
+    if (cancelled && wasWaiting) {
+      this.deps.repos.lectures.setStatus(lectureId, 'needs_transcription', 'Transcription was cancelled.')
+      this.deps.broadcast(IPC.evtLibraryChanged, { lectureId })
+    }
+    // A running job records its own status when it sees the cancellation.
+    return cancelled
+  }
+
+  private async runJob(job: TranscriptionJob, signal: AbortSignal): Promise<void> {
+    const { repos } = this.deps
     const onProgress = (progress: TranscriptionProgress): void =>
-      this.deps.broadcast('transcription:progress', progress)
+      this.deps.broadcast(IPC.evtTranscriptionProgress, progress)
+
+    // Read the lecture fresh: it may have been renamed or moved while it waited.
+    const lecture = repos.lectures.get(job.lectureId)
+    const klass = lecture ? repos.classes.get(lecture.classId) : null
+    if (!lecture || !klass) return
 
     try {
-      await syncGlossaryToDisk(this.deps.repos, klass).catch(() => undefined)
+      await syncGlossaryToDisk(repos, klass).catch(() => undefined)
       await runFinalPass(klass, lecture, {
-        repos: this.deps.repos,
+        repos,
         settings: this.deps.getSettings(),
         transcriber: this.deps.getTranscriber(),
-        glossary: this.deps.repos.glossary.listByClass(klass.id),
-        onProgress
+        glossary: repos.glossary.listByClass(klass.id),
+        onProgress,
+        signal
       })
     } catch (err) {
+      if (signal.aborted) {
+        if ((signal.reason as AbortReason) === 'shutdown') {
+          // Picked up again on the next launch.
+          repos.lectures.setStatus(
+            lecture.id,
+            'queued',
+            'Transcription was interrupted when Recture closed. It will restart next time.'
+          )
+        } else {
+          repos.lectures.setStatus(lecture.id, 'needs_transcription', 'Transcription was cancelled.')
+        }
+        onProgress({ lectureId: lecture.id, phase: 'failed', message: 'Transcription was stopped.', progress: null })
+        return
+      }
       const error = err instanceof Error ? err : new Error(String(err))
-      await handleFinalPassFailure(this.deps.repos, lecture, error, onProgress)
+      await handleFinalPassFailure(repos, lecture, error, onProgress)
     } finally {
-      this.deps.broadcast('library:changed', { lectureId: lecture.id })
+      this.deps.broadcast(IPC.evtLibraryChanged, { lectureId: lecture.id })
     }
   }
 
-  /** Close everything down on app quit without losing the current segment. */
+  /**
+   * Close everything down on app quit: finish writing the current segment,
+   * and stop any transcription so Python is never left running in the
+   * background. An interrupted lecture keeps its place and resumes next launch.
+   */
   async shutdown(): Promise<void> {
     if (this.session) {
       await this.session.stop().catch(() => undefined)
-      this.session = null
     }
     await this.live?.close().catch(() => undefined)
     this.live = null
+    await this.queue.shutdown()
+    this.clearRecordingState()
   }
 }
 

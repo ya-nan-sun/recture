@@ -25,8 +25,9 @@ import {
   writeJsonAtomic
 } from './storage/paths'
 import type { Repos } from './db/repos'
-import { repairTruncatedWav, verifySegmentFile } from './audio/wav'
-import { segmentAbsolutePath, type SegmentManifest } from './audio/recordingSession'
+import { DEFAULT_WAV_FORMAT, repairTruncatedWav, verifySegmentFile } from './audio/wav'
+import { segmentAbsolutePath, type SegmentManifest, type SegmentManifestEntry } from './audio/recordingSession'
+import { DEFAULT_SEGMENT_SECONDS } from '@shared/types'
 
 export interface GlossaryFile {
   version: 1
@@ -226,6 +227,7 @@ export async function recoverInterruptedLecture(repos: Repos, lecture: LectureRe
   }
 
   let startSec = (manifest?.segments ?? []).reduce((n, s) => n + s.durationSec, 0)
+  const recoveredEntries: SegmentManifestEntry[] = []
 
   for (const file of files) {
     const relPath = `audio/${file}`
@@ -237,6 +239,15 @@ export async function recoverInterruptedLecture(repos: Repos, lecture: LectureRe
       if (repaired.byteLength === 0) continue
 
       const index = Number(/segment-(\d{4})\.wav/.exec(file)?.[1] ?? '0')
+      recoveredEntries.push({
+        index,
+        relPath,
+        startSec,
+        durationSec: repaired.durationSec,
+        byteLength: repaired.byteLength,
+        sha256: repaired.sha256,
+        createdAt: new Date().toISOString()
+      })
       repos.segments.add({
         lectureId: lecture.id,
         index,
@@ -255,6 +266,22 @@ export async function recoverInterruptedLecture(repos: Repos, lecture: LectureRe
     } catch {
       report.corruptSegments += 1
     }
+  }
+
+  // Write what was recovered into the manifest as well. The index alone is not
+  // enough: the files are the source of truth, and a later rebuild from disk
+  // would otherwise never learn that the repaired segment exists.
+  if (recoveredEntries.length > 0 || (manifest && !manifest.closedAt)) {
+    const repairedManifest: SegmentManifest = {
+      version: 1,
+      lectureId: lecture.id,
+      format: manifest?.format ?? DEFAULT_WAV_FORMAT,
+      segmentSeconds: manifest?.segmentSeconds ?? DEFAULT_SEGMENT_SECONDS,
+      segments: [...(manifest?.segments ?? []), ...recoveredEntries].sort((a, b) => a.index - b.index),
+      closedAt: new Date().toISOString(),
+      totalDurationSec: startSec
+    }
+    await writeJsonAtomic(paths.manifest, repairedManifest).catch(() => undefined)
   }
 
   repos.lectures.update(lecture.id, {
@@ -285,6 +312,38 @@ export async function recoverAllInterrupted(repos: Repos): Promise<RecoveryRepor
     reports.push(await recoverInterruptedLecture(repos, lecture))
   }
   return reports
+}
+
+/**
+ * Lectures whose transcription was requested but never finished, because the
+ * app quit or crashed while they were queued or mid-pass.
+ *
+ * They used to stay "Transcribing" forever: startup recovery only looked at
+ * interrupted recordings, and no Retry button is offered for a lecture that
+ * claims to be in progress. The student already asked for these to be
+ * transcribed, so they go back in the queue; any whose folder has gone are
+ * flagged instead.
+ */
+export async function recoverStrandedTranscriptions(repos: Repos): Promise<LectureRecord[]> {
+  const stranded = repos.lectures
+    .listAll()
+    .filter((l) => l.status === 'queued' || l.status === 'assembling' || l.status === 'transcribing')
+
+  const resumable: LectureRecord[] = []
+  for (const lecture of stranded) {
+    if (!(await pathExists(lecture.dirPath))) {
+      repos.lectures.setStatus(lecture.id, 'needs_attention', 'The lecture folder is missing from disk.')
+      continue
+    }
+    repos.lectures.setStatus(
+      lecture.id,
+      'queued',
+      'Transcription was interrupted when Recture closed, so it has been restarted.'
+    )
+    const refreshed = repos.lectures.get(lecture.id)
+    if (refreshed) resumable.push(refreshed)
+  }
+  return resumable
 }
 
 // --- management: rename, move, delete -------------------------------------

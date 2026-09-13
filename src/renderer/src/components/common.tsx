@@ -1,10 +1,12 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { LectureRecord, LectureStatus } from '@shared/types'
+import { computeElapsedSec, type ElapsedInput } from '@shared/elapsed'
 import { levelToMeter } from '../audio/recorder'
 
 export function StatusChip({ lecture }: { lecture: LectureRecord }): ReactNode {
   const map: Record<LectureStatus, { label: string; className: string }> = {
     recording: { label: 'Recording', className: 'chip danger' },
+    queued: { label: 'Waiting to transcribe', className: 'chip busy' },
     assembling: { label: 'Assembling', className: 'chip busy' },
     transcribing: { label: 'Transcribing', className: 'chip busy' },
     complete: { label: 'Ready', className: 'chip ok' },
@@ -75,26 +77,23 @@ export function Toast({ message, onDone }: { message: string | null; onDone: () 
 }
 
 /**
- * Seconds since recording started, ticking every second.
+ * Seconds of lecture so far, ticking every second.
  *
- * Derived from the start timestamp rather than from the main process's state
- * broadcasts: those only fire when a segment is committed (every ~45s), which
- * would leave the on-screen clock visibly frozen mid-lecture.
+ * Derived from the recording state (start time, pauses, and any audio a resumed
+ * lecture already had) rather than from segment broadcasts, which arrive only
+ * every ~45 seconds and would leave the clock visibly frozen. Frozen on purpose
+ * while paused.
  */
-export function useElapsed(startedAt: string | null, active: boolean): number {
-  const [seconds, setSeconds] = useState(0)
+export function useElapsed(state: ElapsedInput | null | undefined): number {
+  const [seconds, setSeconds] = useState(() => computeElapsedSec(state, Date.now()))
 
   useEffect(() => {
-    if (!active || !startedAt) {
-      setSeconds(0)
-      return
-    }
-    const startedMs = new Date(startedAt).getTime()
-    const update = (): void => setSeconds(Math.max(0, (Date.now() - startedMs) / 1000))
+    const update = (): void => setSeconds(computeElapsedSec(state, Date.now()))
     update()
+    if (!state?.active || state.paused) return
     const timer = setInterval(update, 1000)
     return () => clearInterval(timer)
-  }, [startedAt, active])
+  }, [state])
 
   return seconds
 }

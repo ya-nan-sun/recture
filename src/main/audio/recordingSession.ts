@@ -15,10 +15,11 @@
  *     the source of truth and the DB is a rebuildable index.
  */
 
+import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { SegmentRecord } from '@shared/types'
 import { AUDIO_FORMAT } from '@shared/types'
-import { lecturePaths, segmentPath, segmentRelPath, writeJsonAtomic, ensureDir } from '../storage/paths'
+import { ensureDir, lecturePaths, readJson, segmentPath, segmentRelPath, writeJsonAtomic } from '../storage/paths'
 import { DEFAULT_WAV_FORMAT, WavSegmentWriter, type WavFormat } from './wav'
 
 export interface SegmentManifestEntry {
@@ -75,6 +76,10 @@ export class RecordingSession {
    */
   private finalizing = false
   private failed: Error | null = null
+  /** Discards incoming frames without ending the lecture (a mid-lecture break). */
+  private paused = false
+  /** Seconds of audio the lecture already had before this session started. */
+  private initialDurationSec = 0
   private readonly format: WavFormat
   private readonly bytesPerSecond: number
 
@@ -89,6 +94,15 @@ export class RecordingSession {
 
   get isStopped(): boolean {
     return !this.accepting
+  }
+
+  get isPaused(): boolean {
+    return this.paused
+  }
+
+  /** Audio already in the lecture when this session began, when resuming into it. */
+  get offsetSec(): number {
+    return this.initialDurationSec
   }
 
   get error(): Error | null {
@@ -115,6 +129,7 @@ export class RecordingSession {
   async start(): Promise<void> {
     const paths = lecturePaths(this.opts.lectureDir)
     await ensureDir(paths.audioDir)
+    await this.adoptExistingAudio()
     await this.writeManifest()
     this.enqueue(async () => {
       this.writer = await WavSegmentWriter.open(
@@ -126,11 +141,62 @@ export class RecordingSession {
   }
 
   /**
+   * Continue a lecture that already has audio instead of overwriting it.
+   *
+   * Recording into such a lecture used to restart numbering at segment 1: it
+   * rewrote segments.json with an empty list, orphaning every existing segment
+   * from its index, then failed to open segment-0001.wav because that file
+   * already existed.
+   */
+  private async adoptExistingAudio(): Promise<void> {
+    const paths = lecturePaths(this.opts.lectureDir)
+    const manifest = await readJson<SegmentManifest>(paths.manifest)
+    const listed = manifest?.segments
+    const existing = (Array.isArray(listed) ? listed : []).filter(isManifestEntry).sort((a, b) => a.index - b.index)
+    this.segments.splice(0, this.segments.length, ...existing)
+
+    // Continue the timeline from where the existing audio ends.
+    this.initialDurationSec = existing.reduce((end, s) => Math.max(end, s.startSec + s.durationSec), 0)
+    this.elapsedBeforeCurrent = this.initialDurationSec
+
+    // Number past every segment file on disk, listed in the manifest or not,
+    // so the exclusive open can never collide with an earlier file.
+    let highest = existing.reduce((n, s) => Math.max(n, s.index), 0)
+    const files = await fs.readdir(paths.audioDir).catch(() => [] as string[])
+    for (const name of files) {
+      if (!name.startsWith('segment-') || !name.endsWith('.wav')) continue
+      const index = Number(name.slice('segment-'.length, name.length - '.wav'.length))
+      if (Number.isInteger(index)) highest = Math.max(highest, index)
+    }
+    this.nextIndex = highest + 1
+  }
+
+  /**
+   * Stop taking frames without ending the lecture: a mid-lecture break. The
+   * segment in progress is finalized first, so a long break never leaves
+   * unchecksummed audio sitting in an open file.
+   */
+  async pause(): Promise<void> {
+    if (!this.accepting || this.failed || this.paused) return
+    this.paused = true
+    this.enqueue(async () => {
+      if (this.writer && this.writer.byteLength > 0) await this.rollover()
+    })
+    await this.queue
+  }
+
+  /** Take frames again after pause(). */
+  resume(): void {
+    if (!this.accepting || this.failed) return
+    this.paused = false
+  }
+
+  /**
    * Accept one PCM frame. Returns immediately; the write is queued. Callers
    * that need back-pressure can await `flush()`.
    */
   write(pcm: Buffer): void {
-    if (!this.accepting || this.failed) return
+    if (!this.accepting || this.failed || this.paused) return
     this.enqueue(async () => {
       if (!this.writer) throw new Error('Recording session received a frame before start()')
       await this.writer.append(pcm)
@@ -159,8 +225,7 @@ export class RecordingSession {
     const { byteLength, durationSec, sha256 } = await writer.finalize()
     this.writer = null
 
-    // A zero-length segment (mic produced nothing) is not worth keeping, but
-    // we never delete it either — just don't claim it as audio.
+    // Only segments that actually contain audio are claimed in the manifest.
     if (byteLength > 0) {
       const entry: SegmentManifestEntry = {
         index: this.nextIndex,
@@ -175,6 +240,10 @@ export class RecordingSession {
       this.elapsedBeforeCurrent = startSec + durationSec
       await this.writeManifest()
       this.opts.onSegmentComplete?.(entry)
+    } else {
+      // Header only, no audio: a stop or pause that landed right after a
+      // rollover. Remove it rather than leave empty files behind.
+      await fs.rm(writer.filePath, { force: true }).catch(() => undefined)
     }
 
     this.nextIndex += 1
@@ -238,6 +307,19 @@ export class RecordingSession {
       }
     })
   }
+}
+
+function isManifestEntry(value: unknown): value is SegmentManifestEntry {
+  const s = value as SegmentManifestEntry
+  return (
+    !!s &&
+    Number.isInteger(s.index) &&
+    typeof s.relPath === 'string' &&
+    typeof s.sha256 === 'string' &&
+    Number.isFinite(s.startSec) &&
+    Number.isFinite(s.durationSec) &&
+    Number.isFinite(s.byteLength)
+  )
 }
 
 /** Convert the manifest on disk into SegmentRecord rows (no DB dependency). */

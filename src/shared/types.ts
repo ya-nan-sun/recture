@@ -40,6 +40,8 @@ export interface ClassRecord {
 
 export type LectureStatus =
   | 'recording'
+  /** Waiting its turn in the transcription queue. */
+  | 'queued'
   | 'assembling'
   | 'transcribing'
   | 'complete'
@@ -95,6 +97,25 @@ export interface SegmentRecord {
 }
 
 export type SegmentVerification = 'pending' | 'ok' | 'checksum_mismatch' | 'missing' | 'unreadable'
+
+/**
+ * A moment the student flagged while recording ("this is on the exam").
+ * Stored in the lecture folder as bookmarks.json.
+ */
+export interface Bookmark {
+  id: string
+  /** Position in the lecture's audio, in seconds. */
+  atSec: number
+  note: string
+  createdAt: string
+}
+
+/** What the transcription queue is doing right now. */
+export interface TranscriptionQueueSnapshot {
+  running: { lectureId: string; startedAt: string } | null
+  /** Lecture ids waiting their turn, in order. */
+  waiting: string[]
+}
 
 // ---------------------------------------------------------------------------
 // transcript.json — the single source of truth for every export
@@ -208,6 +229,8 @@ export interface AppSettings {
   language: string
   /** Global hotkey accelerator for record start/stop. */
   recordHotkey: string
+  /** Global hotkey accelerator that bookmarks the current moment while recording. */
+  bookmarkHotkey: string
   /** Minimum word confidence below which a span is considered for correction. */
   correctionConfidenceThreshold: number
   /** Minimum similarity to a glossary term required to raise a suggestion. */
@@ -231,6 +254,16 @@ export interface RecordingState {
   bytesWritten: number
   /** Live transcription link status. */
   live: LiveStatus
+  /** True while paused mid-lecture; incoming audio is discarded. */
+  paused: boolean
+  /** Milliseconds spent in pauses that have already ended. */
+  pausedMs: number
+  /** When the current pause began, or null when not paused. */
+  pausedAt: string | null
+  /** Seconds of audio the lecture already had when this session began. */
+  offsetSec: number
+  /** Bookmarks added during this session. */
+  bookmarks: Bookmark[]
 }
 
 export type LiveStatus =

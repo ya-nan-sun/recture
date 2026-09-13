@@ -1,5 +1,5 @@
 /**
- * The global record shortcut.
+ * The global shortcuts: start/stop recording, and bookmark the current moment.
  *
  * Registration can fail for reasons outside our control — another app already
  * owns the combination, or the string isn't a valid Electron accelerator. Those
@@ -66,56 +66,80 @@ export function validateAccelerator(accelerator: string): AcceleratorCheck {
   return { valid: true, reason: '' }
 }
 
+export type HotkeyName = 'record' | 'bookmark'
+
+const LABELS: Record<HotkeyName, string> = { record: 'record', bookmark: 'bookmark' }
+
+/**
+ * Owns the app's global shortcuts. Each one is registered, replaced and
+ * reported independently, so a bad bookmark shortcut can never knock out the
+ * recording shortcut.
+ */
 export class HotkeyManager {
-  private current: string | null = null
-  private status: HotkeyStatus = { accelerator: '', registered: false, detail: 'Not set.' }
+  private readonly registered = new Map<HotkeyName, string>()
+  private readonly statuses = new Map<HotkeyName, HotkeyStatus>()
 
-  constructor(private readonly onTrigger: () => void) {}
+  constructor(private readonly handlers: Record<HotkeyName, () => void>) {}
 
-  getStatus(): HotkeyStatus {
-    return this.status
+  getStatus(name: HotkeyName = 'record'): HotkeyStatus {
+    return this.statuses.get(name) ?? { accelerator: '', registered: false, detail: 'Not set.' }
   }
 
-  /** Register `accelerator`, replacing whatever was registered before. */
-  apply(accelerator: string): HotkeyStatus {
+  /** Register `accelerator` for `name`, replacing whatever that shortcut had before. */
+  apply(name: HotkeyName, accelerator: string): HotkeyStatus {
+    this.unregister(name)
+
     const check = validateAccelerator(accelerator)
-    if (!check.valid) {
-      this.unregister()
-      this.status = { accelerator, registered: false, detail: check.reason }
-      return this.status
+    if (!check.valid) return this.setStatus(name, { accelerator, registered: false, detail: check.reason })
+
+    const wanted = accelerator.trim().toLowerCase()
+    const clash = [...this.registered.entries()].find(
+      ([other, value]) => other !== name && value.trim().toLowerCase() === wanted
+    )
+    if (clash) {
+      return this.setStatus(name, {
+        accelerator,
+        registered: false,
+        detail: `Already used by the ${LABELS[clash[0]]} shortcut. Pick a different combination.`
+      })
     }
 
-    this.unregister()
     try {
-      const ok = globalShortcut.register(accelerator, this.onTrigger)
-      if (ok) {
-        this.current = accelerator
-        this.status = { accelerator, registered: true, detail: 'Active — works from any app.' }
-      } else {
-        this.status = {
-          accelerator,
-          registered: false,
-          detail: 'Another app is already using this shortcut. Try a different combination.'
-        }
+      if (globalShortcut.register(accelerator, this.handlers[name])) {
+        this.registered.set(name, accelerator)
+        return this.setStatus(name, { accelerator, registered: true, detail: 'Active — works from any app.' })
       }
+      return this.setStatus(name, {
+        accelerator,
+        registered: false,
+        detail: 'Another app is already using this shortcut. Try a different combination.'
+      })
     } catch (err) {
-      this.status = { accelerator, registered: false, detail: `Could not register: ${(err as Error).message}` }
-    }
-    return this.status
-  }
-
-  private unregister(): void {
-    if (this.current) {
-      try {
-        globalShortcut.unregister(this.current)
-      } catch {
-        // already gone
-      }
-      this.current = null
+      return this.setStatus(name, {
+        accelerator,
+        registered: false,
+        detail: `Could not register: ${(err as Error).message}`
+      })
     }
   }
 
   dispose(): void {
-    this.unregister()
+    for (const name of [...this.registered.keys()]) this.unregister(name)
+  }
+
+  private unregister(name: HotkeyName): void {
+    const current = this.registered.get(name)
+    if (!current) return
+    try {
+      globalShortcut.unregister(current)
+    } catch {
+      // already gone
+    }
+    this.registered.delete(name)
+  }
+
+  private setStatus(name: HotkeyName, status: HotkeyStatus): HotkeyStatus {
+    this.statuses.set(name, status)
+    return status
   }
 }

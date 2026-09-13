@@ -10,7 +10,12 @@ import { createReadStream } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import type { ProviderAvailability } from '@shared/types'
 import type { BatchTranscriber, TranscriptionRequest, TranscriptionResult } from './types'
-import { PermanentTranscriptionError, TransientTranscriptionError } from './types'
+import {
+  PermanentTranscriptionError,
+  TransientTranscriptionError,
+  TranscriptionAbortedError,
+  throwIfAborted
+} from './types'
 import { parseDeepgramResponse, type DeepgramResponse } from './deepgramParse'
 
 export interface DeepgramBatchOptions {
@@ -57,6 +62,7 @@ export class DeepgramBatchTranscriber implements BatchTranscriber {
   }
 
   async transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
+    throwIfAborted(request.signal)
     const key = this.options.getApiKey()
     if (!key) throw new PermanentTranscriptionError('No Deepgram API key is configured.')
 
@@ -82,6 +88,8 @@ export class DeepgramBatchTranscriber implements BatchTranscriber {
         signal: request.signal
       } as RequestInit & { duplex: 'half' })
     } catch (err) {
+      // An aborted upload surfaces as a fetch error; it is a stop, not an outage.
+      if (request.signal?.aborted) throw new TranscriptionAbortedError('Transcription was stopped.')
       // Network-level failure: worth retrying.
       throw new TransientTranscriptionError(`Could not reach Deepgram: ${(err as Error).message}`)
     }

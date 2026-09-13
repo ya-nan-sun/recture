@@ -45,6 +45,18 @@ export const IPC = {
   recordingStop: 'recording:stop',
   recordingState: 'recording:get-state',
   recordingAudio: 'recording:audio-chunk',
+  recordingPause: 'recording:pause',
+  recordingResume: 'recording:resume',
+  recordingBookmark: 'recording:bookmark',
+
+  // bookmarks
+  bookmarksList: 'bookmarks:list',
+  bookmarksUpdate: 'bookmarks:update',
+  bookmarksRemove: 'bookmarks:remove',
+
+  // transcription queue
+  transcriptionQueue: 'transcription:get-queue',
+  transcriptionCancel: 'transcription:cancel',
 
   // transcript
   transcriptGet: 'transcript:get',
@@ -62,6 +74,8 @@ export const IPC = {
   evtRecordingError: 'recording:error',
   evtLiveTranscript: 'recording:live-transcript',
   evtTranscriptionProgress: 'transcription:progress',
+  evtTranscriptionQueue: 'transcription:queue',
+  evtBookmarkAdded: 'recording:bookmarked',
   evtLibraryChanged: 'library:changed',
   evtRequestToggleRecord: 'ui:toggle-record',
   evtNavigate: 'ui:navigate'

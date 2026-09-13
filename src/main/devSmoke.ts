@@ -38,6 +38,7 @@ import { PermanentTranscriptionError, TransientTranscriptionError, type BatchTra
 import { rescanLibrary, reportIsEmpty } from './rescan'
 import { transcriptToMarkdown } from './export/markdown'
 import { transcriptToPdf } from './export/pdf'
+import { runRecordingPipelineChecks } from './devSmokePipeline'
 
 const results: { name: string; ok: boolean; detail?: string }[] = []
 
@@ -447,6 +448,9 @@ async function main(): Promise<void> {
     'rebuilt lectures keep their transcripts',
     repos.lectures.listAll().some((l) => l.transcriptSource !== null)
   )
+
+  // --- 12. recording pipeline: queue, quit and resume, pause, bookmarks ---
+  await runRecordingPipelineChecks({ repos, root, check, frame, stubTranscriber })
 
   // --- report --------------------------------------------------------------
   const failed = results.filter((r) => !r.ok)

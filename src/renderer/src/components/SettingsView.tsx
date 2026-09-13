@@ -14,16 +14,11 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
   const [disk, setDisk] = useState<{ encrypted: boolean | null; detail: string } | null>(null)
   const [hasKey, setHasKey] = useState(false)
   const [apiKey, setApiKey] = useState('')
-  const [hotkey, setHotkey] = useState('')
-  const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus | null>(null)
 
   const reload = async (): Promise<void> => {
     setSettings(await window.recture.settings.get())
     setHasKey(await window.recture.settings.hasApiKey('deepgram'))
     setProviders(await window.recture.settings.providers())
-    const status = await window.recture.settings.hotkeyStatus()
-    setHotkeyStatus(status)
-    setHotkey(status.accelerator)
   }
 
   useEffect(() => {
@@ -37,18 +32,6 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
     try {
       setSettings(await window.recture.settings.update(next))
       setProviders(await window.recture.settings.providers())
-    } catch (err) {
-      onToast(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  const applyHotkey = async (): Promise<void> => {
-    if (!hotkey.trim()) return
-    try {
-      const status = await window.recture.settings.setHotkey(hotkey.trim())
-      setHotkeyStatus(status)
-      setHotkey(status.accelerator)
-      onToast(status.registered ? 'Shortcut active.' : `Shortcut not set: ${status.detail}`)
     } catch (err) {
       onToast(err instanceof Error ? err.message : String(err))
     }
@@ -229,34 +212,98 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
         </div>
       </div>
 
-      <h2>Recording shortcut</h2>
-      <div className="card">
-        <label htmlFor="hotkey">Global hotkey</label>
-        <div className="row">
-          <input
-            id="hotkey"
-            value={hotkey}
-            className="mono"
-            placeholder="CommandOrControl+Shift+R"
-            onChange={(e) => setHotkey(e.target.value)}
-            // Committed on blur or Enter, never per keystroke: saving every
-            // character used to persist half-typed, unregisterable shortcuts.
-            onBlur={() => void applyHotkey()}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void applyHotkey()
-            }}
-          />
-          <button onClick={() => void applyHotkey()} disabled={!hotkey.trim()}>
-            Apply
-          </button>
-        </div>
-        {hotkeyStatus && (
-          <div className="faint" style={{ marginTop: 8 }}>
-            <span className={hotkeyStatus.registered ? 'chip ok' : 'chip warn'}>
-              {hotkeyStatus.registered ? 'Active' : 'Not working'}
+      <h2>Shortcuts</h2>
+      <div className="card stack">
+        <ShortcutField
+          name="record"
+          label="Start / stop recording"
+          placeholder="CommandOrControl+Shift+R"
+          hint="Works from any app, so you never have to find the window when the professor starts."
+          onToast={onToast}
+        />
+        <ShortcutField
+          name="bookmark"
+          label="Bookmark this moment"
+          placeholder="Alt+Shift+B"
+          hint="Flags the current moment while recording, even from another app. Add notes to bookmarks later."
+          onToast={onToast}
+        />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * One global shortcut: typed, applied and reported. Committed on blur or
+ * Enter, never per keystroke, because saving every character used to persist
+ * half-typed shortcuts that could not be registered.
+ */
+function ShortcutField({
+  name,
+  label,
+  placeholder,
+  hint,
+  onToast
+}: {
+  name: 'record' | 'bookmark'
+  label: string
+  placeholder: string
+  hint: string
+  onToast: (m: string) => void
+}): ReactNode {
+  const [value, setValue] = useState('')
+  const [status, setStatus] = useState<HotkeyStatus | null>(null)
+
+  useEffect(() => {
+    void window.recture.settings.hotkeyStatus(name).then((current) => {
+      setStatus(current)
+      setValue(current.accelerator)
+    })
+  }, [name])
+
+  const apply = async (): Promise<void> => {
+    const next = value.trim()
+    if (!next) return
+    // Nothing to do if it is already this shortcut and working.
+    if (status?.registered && status.accelerator === next) return
+    try {
+      const result = await window.recture.settings.setHotkey(next, name)
+      setStatus(result)
+      setValue(result.accelerator)
+      onToast(result.registered ? `${label}: shortcut active.` : `${label}: ${result.detail}`)
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const id = `shortcut-${name}`
+  return (
+    <div>
+      <label htmlFor={id}>{label}</label>
+      <div className="row">
+        <input
+          id={id}
+          value={value}
+          className="mono"
+          placeholder={placeholder}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={() => void apply()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void apply()
+          }}
+        />
+        <button onClick={() => void apply()} disabled={!value.trim()}>
+          Apply
+        </button>
+      </div>
+      <div className="faint" style={{ marginTop: 8 }}>
+        {status && (
+          <>
+            <span className={status.registered ? 'chip ok' : 'chip warn'}>
+              {status.registered ? 'Active' : 'Not working'}
             </span>{' '}
-            {hotkeyStatus.detail}
-          </div>
+            {status.registered ? hint : status.detail}
+          </>
         )}
       </div>
     </div>

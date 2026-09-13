@@ -30,7 +30,7 @@ export default function App(): ReactNode {
 
   const notify = useCallback((message: string) => setToast(message), [])
   const recording = useRecording(notify)
-  const elapsed = useElapsed(recording.state?.startedAt ?? null, recording.isRecording)
+  const elapsed = useElapsed(recording.state)
 
   const refresh = useCallback(async () => {
     const [nextClasses, nextLectures, settings] = await Promise.all([
@@ -114,6 +114,14 @@ export default function App(): ReactNode {
     })
   }, [recording.isRecording, view, activeClass, classes, startRecording, stopRecording, notify])
 
+  // One confirmation for every bookmark, whether from the button or the global
+  // shortcut pressed in another app.
+  useEffect(() => {
+    return window.recture.events.onBookmarkAdded(({ bookmark }) => {
+      notify(`Bookmarked ${formatClock(bookmark.atSec)}${bookmark.note ? ` — ${bookmark.note}` : ''}`)
+    })
+  }, [notify])
+
   useEffect(() => {
     if (view.kind !== 'search') return
     const timer = setTimeout(async () => {
@@ -188,7 +196,8 @@ export default function App(): ReactNode {
         <div className="sidebar-footer">
           {recording.isRecording && (
             <button className="danger" onClick={() => void stopRecording()}>
-              ■ Stop ({formatClock(elapsed)})
+              ■ Stop ({formatClock(elapsed)}
+              {recording.isPaused ? ' · paused' : ''})
             </button>
           )}
           <button
@@ -296,6 +305,9 @@ export default function App(): ReactNode {
                   cloudLiveEnabled={liveEnabled}
                   onStart={(lectureId) => void startRecording(activeClass.id, lectureId)}
                   onStop={() => void stopRecording()}
+                  onPause={() => void recording.pause()}
+                  onResume={() => void recording.resume()}
+                  onBookmark={(note) => void recording.bookmark(note)}
                   onNewLecture={async () => {
                     const created = await window.recture.lectures.create(activeClass.id, {})
                     await refresh()
@@ -335,6 +347,7 @@ export default function App(): ReactNode {
               lecture={activeLecture}
               classes={classes}
               progress={recording.progress}
+              queue={recording.queue}
               onToast={notify}
               onChanged={handleLectureChanged}
               onRemoved={() => {

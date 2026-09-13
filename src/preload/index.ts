@@ -9,6 +9,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { IPC } from '@shared/ipc'
 import type {
   AppSettings,
+  Bookmark,
   ClassRecord,
   ExportOptions,
   GlossaryTerm,
@@ -20,10 +21,14 @@ import type {
   SegmentVerification,
   SuggestionStatus,
   TranscriptFile,
-  TranscriptionProgress
+  TranscriptionProgress,
+  TranscriptionQueueSnapshot
 } from '@shared/types'
 
 type Unsubscribe = () => void
+
+/** Which global shortcut a settings call refers to. */
+type HotkeyName = 'record' | 'bookmark'
 
 export interface RescanReport {
   classesAdopted: number
@@ -58,9 +63,10 @@ const api = {
     diskEncryption: (): Promise<{ encrypted: boolean | null; detail: string }> =>
       ipcRenderer.invoke(IPC.settingsDiskEncryption),
     chooseRoot: (): Promise<string | null> => ipcRenderer.invoke(IPC.settingsChooseRoot),
-    hotkeyStatus: (): Promise<HotkeyStatus> => ipcRenderer.invoke(IPC.settingsHotkeyStatus),
-    setHotkey: (accelerator: string): Promise<HotkeyStatus> =>
-      ipcRenderer.invoke(IPC.settingsSetHotkey, accelerator)
+    hotkeyStatus: (name: HotkeyName = 'record'): Promise<HotkeyStatus> =>
+      ipcRenderer.invoke(IPC.settingsHotkeyStatus, name),
+    setHotkey: (accelerator: string, name: HotkeyName = 'record'): Promise<HotkeyStatus> =>
+      ipcRenderer.invoke(IPC.settingsSetHotkey, accelerator, name)
   },
 
   library: {
@@ -120,13 +126,32 @@ const api = {
       ipcRenderer.invoke(IPC.recordingStart, classId, lectureId),
     stop: (): Promise<{ lectureId: string }> => ipcRenderer.invoke(IPC.recordingStop),
     state: (): Promise<RecordingState> => ipcRenderer.invoke(IPC.recordingState),
+    pause: (): Promise<RecordingState> => ipcRenderer.invoke(IPC.recordingPause),
+    resume: (): Promise<RecordingState> => ipcRenderer.invoke(IPC.recordingResume),
+    /** Flag the current moment while recording, with an optional note. */
+    bookmark: (note?: string): Promise<Bookmark> => ipcRenderer.invoke(IPC.recordingBookmark, note ?? ''),
     /** Fire-and-forget PCM frame. The ArrayBuffer is transferred, not copied. */
     sendAudio: (chunk: ArrayBuffer): void => ipcRenderer.send(IPC.recordingAudio, chunk)
   },
 
+  bookmarks: {
+    list: (lectureId: string): Promise<Bookmark[]> => ipcRenderer.invoke(IPC.bookmarksList, lectureId),
+    update: (lectureId: string, id: string, note: string): Promise<Bookmark[]> =>
+      ipcRenderer.invoke(IPC.bookmarksUpdate, lectureId, id, note),
+    remove: (lectureId: string, id: string): Promise<Bookmark[]> =>
+      ipcRenderer.invoke(IPC.bookmarksRemove, lectureId, id)
+  },
+
+  transcription: {
+    queue: (): Promise<TranscriptionQueueSnapshot> => ipcRenderer.invoke(IPC.transcriptionQueue),
+    /** Remove a waiting lecture from the queue, or stop the one running. */
+    cancel: (lectureId: string): Promise<boolean> => ipcRenderer.invoke(IPC.transcriptionCancel, lectureId)
+  },
+
   transcript: {
     get: (lectureId: string): Promise<TranscriptFile | null> => ipcRenderer.invoke(IPC.transcriptGet, lectureId),
-    retry: (lectureId: string): Promise<void> => ipcRenderer.invoke(IPC.transcriptRetry, lectureId),
+    retry: (lectureId: string): Promise<{ accepted: boolean; position: number }> =>
+      ipcRenderer.invoke(IPC.transcriptRetry, lectureId),
     setSuggestion: (lectureId: string, suggestionId: string, status: SuggestionStatus): Promise<TranscriptFile> =>
       ipcRenderer.invoke(IPC.transcriptSetSuggestion, lectureId, suggestionId, status),
     audioUrl: (lectureId: string): Promise<string | null> => ipcRenderer.invoke(IPC.transcriptAudioUrl, lectureId)
@@ -155,6 +180,10 @@ const api = {
     onTranscriptionProgress: (handler: (progress: TranscriptionProgress) => void): Unsubscribe =>
       on<TranscriptionProgress>(IPC.evtTranscriptionProgress, handler),
     onLibraryChanged: (handler: (payload: unknown) => void): Unsubscribe => on(IPC.evtLibraryChanged, handler),
+    onTranscriptionQueue: (handler: (snapshot: TranscriptionQueueSnapshot) => void): Unsubscribe =>
+      on<TranscriptionQueueSnapshot>(IPC.evtTranscriptionQueue, handler),
+    onBookmarkAdded: (handler: (payload: { lectureId: string; bookmark: Bookmark }) => void): Unsubscribe =>
+      on(IPC.evtBookmarkAdded, handler),
     onToggleRecord: (handler: () => void): Unsubscribe => on(IPC.evtRequestToggleRecord, () => handler())
   }
 }
