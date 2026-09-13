@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Locked-down CSP: no remote script, no remote styles. Audio comes from the
+      lecture-audio: protocol registered in the main process.
+
+      `blob:` in script-src is required and load-bearing: the microphone
+      AudioWorklet is defined inline and loaded from a blob URL, and 'self'
+      does not cover blob: URLs. Without it addModule() fails with the opaque
+      "Unable to load a worklet's module" and recording cannot start at all.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; media-src 'self' lecture-audio:; img-src 'self' data:; connect-src 'self'"
+    />
+    <title>LectureRec</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
