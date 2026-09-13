@@ -184,6 +184,15 @@ export class ClassRepo {
 
 // --- lectures --------------------------------------------------------------
 
+/** Moments listed per lecture in search results. */
+export const MAX_MATCHES_PER_LECTURE = 20
+
+export interface LectureSearchRow {
+  lectureId: string
+  snippet: string
+  matches: { segmentId: string; startSec: number; snippet: string }[]
+}
+
 export class LectureRepo {
   constructor(private readonly db: Db) {}
 
@@ -302,6 +311,7 @@ export class LectureRepo {
   delete(id: string): void {
     this.db.prepare('DELETE FROM lectures WHERE id = ?').run(id)
     this.db.prepare('DELETE FROM lecture_search WHERE lecture_id = ?').run(id)
+    this.db.prepare('DELETE FROM segment_search WHERE lecture_id = ?').run(id)
   }
 
   /** Move a lecture to a different class. Folder moves are the caller's job. */
@@ -311,14 +321,51 @@ export class LectureRepo {
       .run(classId, new Date().toISOString(), id)
   }
 
-  indexForSearch(lectureId: string, className: string, title: string, body: string): void {
-    this.db.prepare('DELETE FROM lecture_search WHERE lecture_id = ?').run(lectureId)
-    this.db
-      .prepare('INSERT INTO lecture_search (lecture_id, class_name, title, body) VALUES (?, ?, ?, ?)')
-      .run(lectureId, className, title, body)
+  /**
+   * Index a transcript for search: the whole lecture, to rank lectures, and
+   * each passage with its time, so a search can jump to the moment it was said.
+   */
+  indexTranscript(
+    lectureId: string,
+    className: string,
+    title: string,
+    segments: { id: string; start: number; text: string }[]
+  ): void {
+    const replace = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM lecture_search WHERE lecture_id = ?').run(lectureId)
+      this.db.prepare('DELETE FROM segment_search WHERE lecture_id = ?').run(lectureId)
+      this.db
+        .prepare('INSERT INTO lecture_search (lecture_id, class_name, title, body) VALUES (?, ?, ?, ?)')
+        .run(lectureId, className, title, segments.map((s) => s.text).join(' '))
+      const insert = this.db.prepare(
+        'INSERT INTO segment_search (lecture_id, segment_id, start_sec, text) VALUES (?, ?, ?, ?)'
+      )
+      for (const segment of segments) {
+        if (segment.text.trim()) insert.run(lectureId, segment.id, segment.start, segment.text)
+      }
+    })
+    replace()
   }
 
-  search(query: string, limit = 50): { lectureId: string; snippet: string }[] {
+  /**
+   * Follow a class or lecture rename in the search index, leaving the indexed
+   * text alone. Renames used to re-index with an empty body, which silently
+   * dropped the lecture's words from search.
+   */
+  renameInSearch(lectureId: string, className: string, title: string): void {
+    this.db
+      .prepare('UPDATE lecture_search SET class_name = ?, title = ? WHERE lecture_id = ?')
+      .run(className, title, lectureId)
+  }
+
+  /** True when lecture text is indexed but its passages are not: an index from before per-moment search. */
+  segmentIndexIsStale(): boolean {
+    const lectures = this.db.prepare("SELECT COUNT(*) AS n FROM lecture_search WHERE body <> ''").get() as { n: number }
+    const passages = this.db.prepare('SELECT COUNT(*) AS n FROM segment_search').get() as { n: number }
+    return lectures.n > 0 && passages.n === 0
+  }
+
+  search(query: string, limit = 50): LectureSearchRow[] {
     const trimmed = query.trim()
     if (!trimmed) return []
     // Quote the term so FTS5 treats user punctuation as literal text rather
@@ -328,12 +375,25 @@ export class LectureRepo {
       .map((t) => `"${t.replace(/"/g, '""')}"`)
       .join(' ')
     try {
-      return this.db
+      // char(2) and char(3) mark matches: characters no transcript contains,
+      // so the renderer never has to treat transcript text as markup.
+      const lectures = this.db
         .prepare(
-          `SELECT lecture_id AS lectureId, snippet(lecture_search, 3, '[', ']', '…', 12) AS snippet
+          `SELECT lecture_id AS lectureId, snippet(lecture_search, 3, char(2), char(3), '…', 12) AS snippet
            FROM lecture_search WHERE lecture_search MATCH ? ORDER BY rank LIMIT ?`
         )
         .all(fts, limit) as { lectureId: string; snippet: string }[]
+      const moments = this.db.prepare(
+        `SELECT segment_id AS segmentId, start_sec AS startSec, snippet(segment_search, 3, char(2), char(3), '…', 14) AS snippet
+         FROM segment_search WHERE segment_search MATCH ? AND lecture_id = ? ORDER BY start_sec LIMIT ?`
+      )
+      return lectures.map((row) => ({
+        ...row,
+        matches: (moments.all(fts, row.lectureId, MAX_MATCHES_PER_LECTURE) as LectureSearchRow['matches']).map((m) => ({
+          ...m,
+          startSec: Number(m.startSec)
+        }))
+      }))
     } catch {
       return []
     }

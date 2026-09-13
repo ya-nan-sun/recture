@@ -112,6 +112,29 @@ export interface Bookmark {
   createdAt: string
 }
 
+/** One lecture matching a search, with the moments in it that match. */
+export interface SearchHit {
+  lecture: LectureRecord
+  /** Snippet of the lecture, with matches between SEARCH_MARK_START and SEARCH_MARK_END. */
+  snippet: string
+  matches: SearchMatch[]
+}
+
+/** A moment in a lecture where the search terms were said. */
+export interface SearchMatch {
+  segmentId: string
+  startSec: number
+  snippet: string
+}
+
+/**
+ * Control characters that cannot occur in transcript text, used to mark search
+ * matches. The renderer splits on them, so a transcript can never be treated
+ * as markup.
+ */
+export const SEARCH_MARK_START = ''
+export const SEARCH_MARK_END = ''
+
 /** What the transcription queue is doing right now. */
 export interface TranscriptionQueueSnapshot {
   running: { lectureId: string; startedAt: string } | null
@@ -141,6 +164,17 @@ export interface TranscriptSegment {
   speaker: string | null
   text: string
   words: TranscriptWord[]
+  /** Present when the student has corrected this segment's text by hand. */
+  edit?: SegmentEdit
+}
+
+/** What a hand-edited segment said before the edit, so it can be restored. */
+export interface SegmentEdit {
+  originalText: string
+  originalWords: TranscriptWord[]
+  /** Glossary suggestions for this segment, set aside while it is edited. */
+  originalSuggestions: CorrectionSuggestion[]
+  editedAt: string
 }
 
 export type SuggestionStatus = 'pending' | 'accepted' | 'rejected'
@@ -192,6 +226,8 @@ export interface TranscriptFile {
   suggestions: CorrectionSuggestion[]
   /** Audio segments that failed verification and were excluded, if any. */
   excludedAudioSegments: { relPath: string; reason: SegmentVerification }[]
+  /** Names the student gave to diarized speakers, e.g. { "Speaker 1": "Prof. Chen" }. */
+  speakerNames?: Record<string, string>
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +287,15 @@ export interface AppSettings {
    * (~115 MB/hour) or Opus (~15 MB/hour).
    */
   audioStorage: AudioStorageFormat
+  /** Colour scheme; `system` follows the operating system. */
+  theme: ThemeSetting
+  /** Transcript text size, in pixels. */
+  transcriptFontSize: number
+  /** The playback speed last chosen for lectures. */
+  playbackRate: number
 }
+
+export type ThemeSetting = 'system' | 'dark' | 'light'
 
 export type AudioStorageFormat = 'wav' | 'opus'
 
@@ -342,12 +386,23 @@ export interface ExportOptions {
   applyAcceptedSuggestions: boolean
   /** Group consecutive segments into paragraphs of roughly this many seconds. */
   paragraphSeconds: number
+  /** Drop "um", "uh" and similar hesitations for easier reading. Off keeps the verbatim record. */
+  removeFillers: boolean
+  /** List the lecture's bookmarks at the top of Markdown and PDF exports. */
+  includeBookmarks: boolean
 }
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
   includeTimestamps: true,
   applyAcceptedSuggestions: true,
-  paragraphSeconds: 30
+  paragraphSeconds: 30,
+  removeFillers: false,
+  includeBookmarks: true
+}
+
+/** Lecture data kept outside transcript.json that exports can include. */
+export interface ExportExtras {
+  bookmarks?: Bookmark[]
 }
 
 /** Above this many characters the UI offers per-section copy instead. */

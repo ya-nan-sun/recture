@@ -32,6 +32,7 @@ import type {
   TranscriptionProgress
 } from '@shared/types'
 import { findCorrectionSuggestions, glossaryKeyterms } from '@shared/correction'
+import { searchableSegments } from '@shared/transcript'
 import { lecturePaths, readJson, writeJsonAtomic } from '../storage/paths'
 import { verifySegmentFile } from '../audio/wav'
 import { isAudioArchive, segmentAbsolutePath, type AudioArchive, type SegmentManifest } from '../audio/recordingSession'
@@ -243,12 +244,7 @@ export async function runFinalPass(
     transcriptPass: 'final'
   })
 
-  repos.lectures.indexForSearch(
-    lecture.id,
-    klass.name,
-    lecture.title,
-    transcript.segments.map((s) => s.text).join(' ')
-  )
+  repos.lectures.indexTranscript(lecture.id, klass.name, lecture.title, searchableSegments(transcript))
 
   // --- 6. fold the audio into one file -------------------------------------
   let archive: AudioArchive | null = null

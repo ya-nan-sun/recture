@@ -6,9 +6,9 @@
  */
 
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib'
-import type { ExportOptions, TranscriptFile } from '@shared/types'
+import type { ExportExtras, ExportOptions, TranscriptFile } from '@shared/types'
 import { formatClock } from '@shared/naming'
-import { materializeTranscript, toParagraphs } from '@shared/transcript'
+import { readableParagraphs } from '@shared/transcript'
 
 const PAGE = { width: 595.28, height: 841.89 } // A4 portrait
 const MARGIN = 56
@@ -67,9 +67,11 @@ function wrap(text: string, font: PDFFont, size: number, maxWidth: number): stri
   return lines
 }
 
-export async function transcriptToPdf(transcript: TranscriptFile, options: ExportOptions): Promise<Uint8Array> {
-  const source = options.applyAcceptedSuggestions ? materializeTranscript(transcript) : transcript
-
+export async function transcriptToPdf(
+  transcript: TranscriptFile,
+  options: ExportOptions,
+  extras: ExportExtras = {}
+): Promise<Uint8Array> {
   const doc = await PDFDocument.create()
   doc.setTitle(`${transcript.lectureTitle} — ${transcript.className}`)
   doc.setSubject(`Lecture transcript, ${transcript.className}`)
@@ -129,6 +131,15 @@ export async function transcriptToPdf(transcript: TranscriptFile, options: Expor
     )
   }
 
+  const bookmarks = options.includeBookmarks ? [...(extras.bookmarks ?? [])].sort((a, b) => a.atSec - b.atSec) : []
+  if (bookmarks.length > 0) {
+    y -= 10
+    draw('Bookmarks', bold, 12)
+    for (const bookmark of bookmarks) {
+      draw(`${formatClock(bookmark.atSec)}   ${bookmark.note.trim() || 'Bookmarked moment'}`, body, 10)
+    }
+  }
+
   y -= 10
   need(12)
   page.drawLine({
@@ -140,7 +151,7 @@ export async function transcriptToPdf(transcript: TranscriptFile, options: Expor
   y -= 18
 
   // --- body ----------------------------------------------------------------
-  for (const p of toParagraphs(source.segments, options.paragraphSeconds)) {
+  for (const p of readableParagraphs(transcript, options)) {
     need(LINE_HEIGHT * 2)
     if (options.includeTimestamps) {
       page.drawText(toWinAnsi(`[${formatClock(p.start)}]`), {

@@ -15,13 +15,14 @@ import type {
   GlossaryTerm,
   LectureRecord,
   ProviderAvailability,
+  SearchHit,
   SuggestionStatus,
   TranscriptFile,
   TranscriptionQueueSnapshot
 } from '@shared/types'
 import { CLIPBOARD_SOFT_LIMIT, DEFAULT_EXPORT_OPTIONS } from '@shared/types'
 import { AUDIO_PROTOCOL, IPC } from '@shared/ipc'
-import { toPlainText, toSections } from '@shared/transcript'
+import { editSegmentText, revertSegmentEdit, setSpeakerName, toPlainText, toSections } from '@shared/transcript'
 import type { Repos } from './db/repos'
 import type { SettingsStore } from './storage/settings'
 import { getDiskEncryptionHint } from './storage/settings'
@@ -33,6 +34,7 @@ import {
   deleteClass,
   deleteLecture,
   importGlossaryFromDisk,
+  indexLectureTranscript,
   moveLecture,
   renameClass,
   renameLecture,
@@ -41,7 +43,8 @@ import {
 import type { RecordingController } from './recordingController'
 import { rescanLibrary, type RescanReport } from './rescan'
 import type { HotkeyManager, HotkeyName, HotkeyStatus } from './hotkey'
-import { readBookmarks, removeBookmark, updateBookmark } from './bookmarks'
+import { addBookmark, readBookmarks, removeBookmark, updateBookmark } from './bookmarks'
+import { loadTranscriptFile, updateTranscript } from './transcriptStore'
 import { transcriptToMarkdown } from './export/markdown'
 import { transcriptToPdf } from './export/pdf'
 import type { BatchTranscriber } from './transcription/types'
@@ -306,14 +309,13 @@ export function registerIpc(deps: IpcDeps): void {
     return deleteLecture(repos, settings.get().rootDir, lecture, Boolean(deleteFiles))
   })
 
-  ipcMain.handle(IPC.lectureSearch, (_e, query: string) => {
-    const hits = repos.lectures.search(String(query ?? ''))
+  ipcMain.handle(IPC.lectureSearch, (_e, query: string): SearchHit[] => {
+    const hits: SearchHit[] = []
+    for (const hit of repos.lectures.search(String(query ?? ''))) {
+      const lecture = repos.lectures.get(hit.lectureId)
+      if (lecture) hits.push({ lecture, snippet: hit.snippet, matches: hit.matches })
+    }
     return hits
-      .map((hit) => {
-        const lecture = repos.lectures.get(hit.lectureId)
-        return lecture ? { lecture, snippet: hit.snippet } : null
-      })
-      .filter((x): x is { lecture: LectureRecord; snippet: string } => x !== null)
   })
 
   ipcMain.handle(IPC.lectureReveal, async (_e, id: string): Promise<void> => {
@@ -431,10 +433,8 @@ export function registerIpc(deps: IpcDeps): void {
 
   // --- transcript ----------------------------------------------------------
 
-  const loadTranscript = async (lecture: LectureRecord): Promise<TranscriptFile | null> => {
-    const paths = lecturePaths(lecture.dirPath)
-    return (await readJson<TranscriptFile>(paths.transcript)) ?? readJson<TranscriptFile>(paths.liveTranscript)
-  }
+  const loadTranscript = async (lecture: LectureRecord): Promise<TranscriptFile | null> =>
+    (await loadTranscriptFile(lecture.dirPath))?.transcript ?? null
 
   ipcMain.handle(IPC.transcriptGet, async (_e, lectureId: string): Promise<TranscriptFile | null> =>
     loadTranscript(requireLecture(lectureId))
@@ -446,24 +446,83 @@ export function registerIpc(deps: IpcDeps): void {
     controller.requestTranscription(requireLecture(lectureId).id, 'retry')
   )
 
+  /** Keep search in step with what the transcript now says. */
+  const reindexLecture = (lecture: LectureRecord, transcript: TranscriptFile): void => {
+    const klass = repos.classes.get(lecture.classId)
+    if (klass) indexLectureTranscript(repos, lecture.id, klass.name, lecture.title, transcript)
+  }
+
+  /** A pass that is queued or running replaces the transcript, and would throw these changes away. */
+  const assertTranscriptEditable = (lecture: LectureRecord): void => {
+    if (controller.queue.has(lecture.id)) {
+      throw new Error(
+        'This lecture is being transcribed again, which will replace its transcript. Make changes once that finishes.'
+      )
+    }
+  }
+
   ipcMain.handle(
     IPC.transcriptSetSuggestion,
     async (_e, lectureId: string, suggestionId: string, status: SuggestionStatus): Promise<TranscriptFile> => {
       const lecture = requireLecture(lectureId)
-      const paths = lecturePaths(lecture.dirPath)
-      const transcript = await readJson<TranscriptFile>(paths.transcript)
-      if (!transcript) throw new Error('No final transcript to edit yet.')
-
-      const suggestion = transcript.suggestions.find((s) => s.id === suggestionId)
-      if (!suggestion) throw new Error('That suggestion no longer exists.')
-      suggestion.status = status
-      transcript.updatedAt = new Date().toISOString()
-
-      await writeJsonAtomic(paths.transcript, transcript)
+      if (status !== 'accepted' && status !== 'rejected' && status !== 'pending') {
+        throw new Error('Unknown suggestion status.')
+      }
+      assertTranscriptEditable(lecture)
+      const transcript = await updateTranscript(lecture.dirPath, (current) => {
+        if (!current.suggestions.some((s) => s.id === suggestionId)) {
+          throw new Error('That suggestion no longer exists.')
+        }
+        return {
+          ...current,
+          updatedAt: new Date().toISOString(),
+          suggestions: current.suggestions.map((s) => (s.id === suggestionId ? { ...s, status } : s))
+        }
+      })
+      reindexLecture(lecture, transcript)
       deps.broadcast(IPC.evtLibraryChanged, { lectureId })
       return transcript
     }
   )
+
+  // Correct a passage by hand. The original wording is kept so it can be restored.
+  ipcMain.handle(
+    IPC.transcriptEditSegment,
+    async (_e, lectureId: string, segmentId: string, text: string): Promise<TranscriptFile> => {
+      const lecture = requireLecture(lectureId)
+      if (typeof segmentId !== 'string' || typeof text !== 'string') throw new Error('Nothing to save.')
+      assertTranscriptEditable(lecture)
+      const transcript = await updateTranscript(lecture.dirPath, (current) => editSegmentText(current, segmentId, text))
+      reindexLecture(lecture, transcript)
+      return transcript
+    }
+  )
+
+  ipcMain.handle(IPC.transcriptRevertSegment, async (_e, lectureId: string, segmentId: string): Promise<TranscriptFile> => {
+    const lecture = requireLecture(lectureId)
+    if (typeof segmentId !== 'string') throw new Error('Nothing to restore.')
+    assertTranscriptEditable(lecture)
+    const transcript = await updateTranscript(lecture.dirPath, (current) => revertSegmentEdit(current, segmentId))
+    reindexLecture(lecture, transcript)
+    return transcript
+  })
+
+  ipcMain.handle(
+    IPC.transcriptSetSpeakerName,
+    async (_e, lectureId: string, speaker: string, name: string): Promise<TranscriptFile> => {
+      const lecture = requireLecture(lectureId)
+      if (typeof speaker !== 'string') throw new Error('Which speaker?')
+      assertTranscriptEditable(lecture)
+      return updateTranscript(lecture.dirPath, (current) => setSpeakerName(current, speaker, String(name ?? '')))
+    }
+  )
+
+  // Bookmark a moment while listening back, not only while recording.
+  ipcMain.handle(IPC.bookmarksAdd, async (_e, lectureId: string, atSec: number, note?: string): Promise<Bookmark[]> => {
+    const lecture = requireLecture(lectureId)
+    await addBookmark(lecture.dirPath, Number(atSec), String(note ?? ''))
+    return readBookmarks(lecture.dirPath)
+  })
 
   ipcMain.handle(IPC.transcriptAudioUrl, async (_e, lectureId: string): Promise<string | null> => {
     const lecture = requireLecture(lectureId)
@@ -500,7 +559,7 @@ export function registerIpc(deps: IpcDeps): void {
     async (_e, lectureId: string, options?: Partial<ExportOptions>): Promise<string> => {
       const { lecture, transcript } = await requireTranscript(lectureId)
       const merged = { ...DEFAULT_EXPORT_OPTIONS, ...options }
-      const markdown = transcriptToMarkdown(transcript, merged)
+      const markdown = transcriptToMarkdown(transcript, merged, { bookmarks: await readBookmarks(lecture.dirPath) })
       const target = lecturePaths(lecture.dirPath).markdown
       assertInRoot(target)
       await fs.writeFile(target, markdown, 'utf8')
@@ -511,7 +570,7 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle(IPC.exportPdf, async (_e, lectureId: string, options?: Partial<ExportOptions>): Promise<string> => {
     const { lecture, transcript } = await requireTranscript(lectureId)
     const merged = { ...DEFAULT_EXPORT_OPTIONS, ...options }
-    const bytes = await transcriptToPdf(transcript, merged)
+    const bytes = await transcriptToPdf(transcript, merged, { bookmarks: await readBookmarks(lecture.dirPath) })
     const target = lecturePaths(lecture.dirPath).pdf
     assertInRoot(target)
     await fs.writeFile(target, bytes)

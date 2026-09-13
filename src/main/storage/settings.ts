@@ -46,7 +46,10 @@ export function defaultSettings(): AppSettings {
     acknowledgedCloudNotice: false,
     micDeviceId: '',
     apiKeyReentryNotice: false,
-    audioStorage: 'wav'
+    audioStorage: 'wav',
+    theme: 'system',
+    transcriptFontSize: 15,
+    playbackRate: 1
   }
 }
 

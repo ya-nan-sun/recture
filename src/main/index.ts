@@ -28,7 +28,7 @@ import { ensureDir, isInside } from './storage/paths'
 import { classesRoot } from './storage/paths'
 import { RecordingController, broadcaster } from './recordingController'
 import { registerClipboardSection, registerIpc } from './ipc'
-import { recoverAllInterrupted, recoverStrandedTranscriptions } from './library'
+import { recoverAllInterrupted, recoverStrandedTranscriptions, reindexSearch } from './library'
 import { LibraryWatcher, describeRescan, rescanLibrary, reportIsEmpty } from './rescan'
 import { PowerGuard } from './powerGuard'
 import { DeepgramBatchTranscriber } from './transcription/deepgramBatch'
@@ -233,6 +233,12 @@ app.whenReady().then(async () => {
     runRescan
   )
   await watcherRef.start()
+
+  // Search used to index whole lectures only. Index the passages of
+  // transcripts made before that, once, in the background.
+  if (repos.lectures.segmentIndexIsStale()) {
+    void reindexSearch(repos).catch(() => undefined)
+  }
 
   // Transcriptions the app was in the middle of when it last closed carry on,
   // instead of sitting on "Transcribing" forever with no way to retry.

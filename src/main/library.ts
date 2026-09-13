@@ -11,6 +11,8 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { ClassRecord, GlossaryTerm, LectureRecord, TranscriptFile } from '@shared/types'
 import { lectureFolderName, sanitizeSegment, uniqueName } from '@shared/naming'
+import { searchableSegments } from '@shared/transcript'
+import { loadTranscriptFile } from './transcriptStore'
 import {
   classDir,
   classesRoot,
@@ -162,6 +164,33 @@ export async function importGlossaryFromDisk(repos: Repos, klass: ClassRecord): 
     )
   }
   return repos.glossary.listByClass(klass.id)
+}
+
+// --- search --------------------------------------------------------------------
+
+/** Index a lecture's transcript for search, with corrections and edits as the student sees them. */
+export function indexLectureTranscript(
+  repos: Repos,
+  lectureId: string,
+  className: string,
+  title: string,
+  transcript: TranscriptFile
+): void {
+  repos.lectures.indexTranscript(lectureId, className, title, searchableSegments(transcript))
+}
+
+/** Rebuild the search index from the transcripts on disk. Returns how many lectures were indexed. */
+export async function reindexSearch(repos: Repos): Promise<number> {
+  let indexed = 0
+  for (const lecture of repos.lectures.listAll()) {
+    const klass = repos.classes.get(lecture.classId)
+    if (!klass) continue
+    const loaded = await loadTranscriptFile(lecture.dirPath).catch(() => null)
+    if (!loaded) continue
+    indexLectureTranscript(repos, lecture.id, klass.name, lecture.title, loaded.transcript)
+    indexed += 1
+  }
+  return indexed
 }
 
 // --- crash recovery --------------------------------------------------------
@@ -433,7 +462,7 @@ export async function renameClass(
     const moved = path.join(newDir, path.basename(lecture.dirPath))
     repos.lectures.update(lecture.id, { dirPath: moved })
     await retitleTranscripts(moved, { className: folder }).catch(() => undefined)
-    repos.lectures.indexForSearch(lecture.id, folder, lecture.title, '')
+    repos.lectures.renameInSearch(lecture.id, folder, lecture.title)
   }
 
   const updated = repos.classes.get(klass.id)!
@@ -481,13 +510,7 @@ export async function renameLecture(
   })
   await retitleTranscripts(newDir, { lectureTitle: safeTitle }).catch(() => undefined)
 
-  const transcript = await readJson<TranscriptFile>(lecturePaths(newDir).transcript)
-  repos.lectures.indexForSearch(
-    lecture.id,
-    klass.name,
-    safeTitle,
-    transcript ? transcript.segments.map((s) => s.text).join(' ') : ''
-  )
+  repos.lectures.renameInSearch(lecture.id, klass.name, safeTitle)
   return repos.lectures.get(lecture.id)!
 }
 
@@ -519,13 +542,7 @@ export async function moveLecture(
   })
   await retitleTranscripts(newDir, { classId: target.id, className: target.name }).catch(() => undefined)
 
-  const transcript = await readJson<TranscriptFile>(lecturePaths(newDir).transcript)
-  repos.lectures.indexForSearch(
-    lecture.id,
-    target.name,
-    lecture.title,
-    transcript ? transcript.segments.map((s) => s.text).join(' ') : ''
-  )
+  repos.lectures.renameInSearch(lecture.id, target.name, lecture.title)
   return repos.lectures.get(lecture.id)!
 }
 

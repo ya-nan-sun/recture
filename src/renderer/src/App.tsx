@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { ClassRecord, LectureRecord } from '@shared/types'
+import type { AppSettings, ClassRecord, LectureRecord, SearchHit, ThemeSetting } from '@shared/types'
+import { SearchResults } from './components/SearchResults'
+import { useAppearance } from './hooks/useAppearance'
 import { formatClock } from '@shared/naming'
 import { useRecording } from './hooks/useRecording'
 import { Empty, Modal, StatusChip, Toast, useElapsed } from './components/common'
 import { RecordPanel } from './components/RecordPanel'
-import { LectureView } from './components/LectureView'
+import { LectureView, type LectureFocus } from './components/LectureView'
 import { GlossaryPanel } from './components/GlossaryPanel'
 import { SettingsView } from './components/SettingsView'
 import { DeleteDialog, RenameDialog } from './components/ManageDialogs'
@@ -15,7 +17,7 @@ import { useImports } from './hooks/useImports'
 
 type View =
   | { kind: 'class'; classId: string; tab: 'lectures' | 'glossary' }
-  | { kind: 'lecture'; lectureId: string }
+  | { kind: 'lecture'; lectureId: string; focus?: LectureFocus }
   | { kind: 'settings' }
   | { kind: 'search' }
 
@@ -29,15 +31,30 @@ export default function App(): ReactNode {
   const [query, setQuery] = useState('')
   const [renamingClass, setRenamingClass] = useState<ClassRecord | null>(null)
   const [deletingClass, setDeletingClass] = useState<ClassRecord | null>(null)
-  const [results, setResults] = useState<{ lecture: LectureRecord; snippet: string }[]>([])
+  const [results, setResults] = useState<SearchHit[]>([])
   const [liveEnabled, setLiveEnabled] = useState(false)
   const [dropping, setDropping] = useState(false)
+  const [appearance, setAppearance] = useState<{ theme: ThemeSetting; fontSize: number; playbackRate: number }>({
+    theme: 'system',
+    fontSize: 15,
+    playbackRate: 1
+  })
+
+  const applySettings = useCallback((settings: AppSettings) => {
+    setLiveEnabled(settings.liveProvider === 'deepgram-live')
+    setAppearance({
+      theme: settings.theme,
+      fontSize: settings.transcriptFontSize,
+      playbackRate: settings.playbackRate
+    })
+  }, [])
 
   const notify = useCallback((message: string) => setToast(message), [])
   const recording = useRecording(notify)
   const elapsed = useElapsed(recording.state)
   const readiness = useReadiness(view.kind, recording.isRecording)
   const imports = useImports(notify)
+  useAppearance(appearance.theme, appearance.fontSize)
 
   // Recomputed on every render. While recording, the elapsed clock re-renders
   // once a second, which keeps "no sound for N seconds" current.
@@ -74,9 +91,9 @@ export default function App(): ReactNode {
     ])
     setClasses(nextClasses)
     setLectures(nextLectures)
-    setLiveEnabled(settings.liveProvider === 'deepgram-live')
+    applySettings(settings)
     return nextClasses
-  }, [])
+  }, [applySettings])
 
   // Stable identity on purpose: LectureView reacts to transcription finishing,
   // and an inline arrow here gave it a new callback on every render.
@@ -295,12 +312,12 @@ export default function App(): ReactNode {
       </aside>
 
       <main className="main">
-        {view.kind === 'settings' && <SettingsView onToast={notify} />}
+        {view.kind === 'settings' && <SettingsView onToast={notify} onSettingsChanged={applySettings} />}
 
         {view.kind === 'search' && (
           <div className="main-inner">
             <h1>Search transcripts</h1>
-            <p className="subtitle">Full-text search across every completed lecture.</p>
+            <p className="subtitle">Every transcribed lecture. Pick a result to open the lecture at that moment.</p>
             <input
               autoFocus
               placeholder="eigenvalue, midterm, office hours…"
@@ -308,26 +325,21 @@ export default function App(): ReactNode {
               onChange={(e) => setQuery(e.target.value)}
             />
             <div style={{ marginTop: 16 }}>
-              {query.trim() && results.length === 0 && <Empty title="No matches" />}
-              {results.map(({ lecture, snippet }) => (
-                <button
-                  key={lecture.id}
-                  className="lecture-row"
-                  onClick={() => setView({ kind: 'lecture', lectureId: lecture.id })}
-                >
-                  <div style={{ flex: 1 }}>
-                    <div className="lecture-title">{lecture.title}</div>
-                    <div
-                      className="faint"
-                      dangerouslySetInnerHTML={{
-                        // Snippet markers come from SQLite's own snippet(), not
-                        // from user input.
-                        __html: snippet.replace(/\[/g, '<mark>').replace(/\]/g, '</mark>')
-                      }}
-                    />
-                  </div>
-                </button>
-              ))}
+              <SearchResults
+                query={query}
+                hits={results}
+                classNames={Object.fromEntries(classes.map((c) => [c.id, c.name]))}
+                onOpen={(request) =>
+                  setView({
+                    kind: 'lecture',
+                    lectureId: request.lectureId,
+                    focus:
+                      request.atSec === undefined
+                        ? undefined
+                        : { atSec: request.atSec, segmentId: request.segmentId, query, nonce: Date.now() }
+                  })
+                }
+              />
             </div>
           </div>
         )}
@@ -444,6 +456,12 @@ export default function App(): ReactNode {
               progress={recording.progress}
               queue={recording.queue}
               importProgress={imports[activeLecture.id] ?? null}
+              focus={view.focus ?? null}
+              playbackRate={appearance.playbackRate}
+              onPlaybackRateChange={(rate) => {
+                setAppearance((current) => ({ ...current, playbackRate: rate }))
+                void window.recture.settings.update({ playbackRate: rate }).catch(() => undefined)
+              }}
               onToast={notify}
               onChanged={handleLectureChanged}
               onRemoved={() => {

@@ -34,7 +34,7 @@ import {
   writeJsonAtomic
 } from './storage/paths'
 import { isAudioArchive, type SegmentManifest } from './audio/recordingSession'
-import type { GlossaryFile } from './library'
+import { indexLectureTranscript, type GlossaryFile } from './library'
 
 interface ClassMeta {
   version: number
@@ -272,12 +272,7 @@ export async function rescanLibrary(
       })
 
       if (transcript) {
-        repos.lectures.indexForSearch(
-          created.id,
-          klass.name,
-          created.title,
-          transcript.segments.map((s) => s.text).join(' ')
-        )
+        indexLectureTranscript(repos, created.id, klass.name, created.title, transcript)
       }
 
       // Stamp identity onto the folder so it is recognised next time.

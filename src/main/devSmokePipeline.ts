@@ -103,7 +103,10 @@ export function testSettings(root: string): AppSettings {
     acknowledgedCloudNotice: true,
     micDeviceId: '',
     apiKeyReentryNotice: false,
-    audioStorage: 'wav'
+    audioStorage: 'wav',
+    theme: 'system',
+    transcriptFontSize: 15,
+    playbackRate: 1
   }
 }
 

@@ -60,6 +60,7 @@ export const IPC = {
   bookmarksList: 'bookmarks:list',
   bookmarksUpdate: 'bookmarks:update',
   bookmarksRemove: 'bookmarks:remove',
+  bookmarksAdd: 'bookmarks:add',
 
   // transcription queue
   transcriptionQueue: 'transcription:get-queue',
@@ -70,6 +71,9 @@ export const IPC = {
   transcriptRetry: 'transcript:retry',
   transcriptSetSuggestion: 'transcript:set-suggestion',
   transcriptAudioUrl: 'transcript:audio-url',
+  transcriptEditSegment: 'transcript:edit-segment',
+  transcriptRevertSegment: 'transcript:revert-segment',
+  transcriptSetSpeakerName: 'transcript:set-speaker-name',
 
   // export
   exportMarkdown: 'export:markdown',

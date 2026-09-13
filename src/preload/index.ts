@@ -21,6 +21,7 @@ import type {
   PowerNotice,
   ProviderAvailability,
   RecordingState,
+  SearchHit,
   SegmentVerification,
   SuggestionStatus,
   TranscriptFile,
@@ -106,8 +107,8 @@ const api = {
     /** `deleteFiles` erases the audio from disk. Defaults to keeping it. */
     remove: (id: string, deleteFiles = false): Promise<DeleteOutcome> =>
       ipcRenderer.invoke(IPC.lectureDelete, id, deleteFiles),
-    search: (query: string): Promise<{ lecture: LectureRecord; snippet: string }[]> =>
-      ipcRenderer.invoke(IPC.lectureSearch, query),
+    /** Lectures matching a search, each with the moments the words were said. */
+    search: (query: string): Promise<SearchHit[]> => ipcRenderer.invoke(IPC.lectureSearch, query),
     reveal: (id: string): Promise<void> => ipcRenderer.invoke(IPC.lectureReveal, id),
     verify: (
       id: string
@@ -156,7 +157,10 @@ const api = {
     update: (lectureId: string, id: string, note: string): Promise<Bookmark[]> =>
       ipcRenderer.invoke(IPC.bookmarksUpdate, lectureId, id, note),
     remove: (lectureId: string, id: string): Promise<Bookmark[]> =>
-      ipcRenderer.invoke(IPC.bookmarksRemove, lectureId, id)
+      ipcRenderer.invoke(IPC.bookmarksRemove, lectureId, id),
+    /** Bookmark a moment of a recorded lecture, e.g. while listening back. */
+    add: (lectureId: string, atSec: number, note = ''): Promise<Bookmark[]> =>
+      ipcRenderer.invoke(IPC.bookmarksAdd, lectureId, atSec, note)
   },
 
   transcription: {
@@ -171,6 +175,15 @@ const api = {
       ipcRenderer.invoke(IPC.transcriptRetry, lectureId),
     setSuggestion: (lectureId: string, suggestionId: string, status: SuggestionStatus): Promise<TranscriptFile> =>
       ipcRenderer.invoke(IPC.transcriptSetSuggestion, lectureId, suggestionId, status),
+    /** Correct one passage by hand. */
+    editSegment: (lectureId: string, segmentId: string, text: string): Promise<TranscriptFile> =>
+      ipcRenderer.invoke(IPC.transcriptEditSegment, lectureId, segmentId, text),
+    /** Put a hand-corrected passage back as it was transcribed. */
+    revertSegment: (lectureId: string, segmentId: string): Promise<TranscriptFile> =>
+      ipcRenderer.invoke(IPC.transcriptRevertSegment, lectureId, segmentId),
+    /** Name a speaker, e.g. "Speaker 1" → "Prof. Chen". An empty name goes back to the label. */
+    setSpeakerName: (lectureId: string, speaker: string, name: string): Promise<TranscriptFile> =>
+      ipcRenderer.invoke(IPC.transcriptSetSpeakerName, lectureId, speaker, name),
     audioUrl: (lectureId: string): Promise<string | null> => ipcRenderer.invoke(IPC.transcriptAudioUrl, lectureId)
   },
 

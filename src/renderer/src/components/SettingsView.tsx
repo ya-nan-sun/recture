@@ -4,8 +4,12 @@ import type {
   AudioStorageFormat,
   BatchProviderId,
   HotkeyStatus,
-  ProviderAvailability
+  ProviderAvailability,
+  ThemeSetting
 } from '@shared/types'
+import { clampFontSize } from '@shared/reading'
+
+const FONT_SIZES = [13, 14, 15, 16, 18, 20, 22, 24]
 
 /**
  * Settings, including the privacy disclosure.
@@ -14,7 +18,14 @@ import type {
  * policy link, because it is the one thing about this app a student might
  * reasonably object to.
  */
-export function SettingsView({ onToast }: { onToast: (m: string) => void }): ReactNode {
+export function SettingsView({
+  onToast,
+  onSettingsChanged
+}: {
+  onToast: (m: string) => void
+  /** Told about every saved change, so appearance applies at once. */
+  onSettingsChanged?: (settings: AppSettings) => void
+}): ReactNode {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [providers, setProviders] = useState<ProviderAvailability[]>([])
   const [disk, setDisk] = useState<{ encrypted: boolean | null; detail: string } | null>(null)
@@ -36,8 +47,12 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
 
   const patch = async (next: Partial<AppSettings>): Promise<void> => {
     try {
-      setSettings(await window.recture.settings.update(next))
-      setProviders(await window.recture.settings.providers())
+      const updated = await window.recture.settings.update(next)
+      setSettings(updated)
+      onSettingsChanged?.(updated)
+      // Checking providers starts Python; appearance changes don't need it.
+      const appearanceOnly = Object.keys(next).every((key) => key === 'theme' || key === 'transcriptFontSize')
+      if (!appearanceOnly) setProviders(await window.recture.settings.providers())
     } catch (err) {
       onToast(err instanceof Error ? err.message : String(err))
     }
@@ -85,6 +100,36 @@ export function SettingsView({ onToast }: { onToast: (m: string) => void }): Rea
             settings.
           </>
         )}
+      </div>
+
+      <h2>Reading</h2>
+      <div className="card grid-2">
+        <div>
+          <label htmlFor="theme">Theme</label>
+          <select
+            id="theme"
+            value={settings.theme}
+            onChange={(e) => void patch({ theme: e.target.value as ThemeSetting })}
+          >
+            <option value="system">Match my computer</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="font-size">Transcript text size</label>
+          <select
+            id="font-size"
+            value={clampFontSize(settings.transcriptFontSize)}
+            onChange={(e) => void patch({ transcriptFontSize: Number(e.target.value) })}
+          >
+            {FONT_SIZES.map((size) => (
+              <option key={size} value={size}>
+                {size === 15 ? `${size} px (default)` : `${size} px`}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <h2>Library</h2>

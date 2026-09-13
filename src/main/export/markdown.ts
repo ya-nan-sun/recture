@@ -1,6 +1,6 @@
-import type { ExportOptions, TranscriptFile } from '@shared/types'
+import type { ExportExtras, ExportOptions, TranscriptFile } from '@shared/types'
 import { formatClock } from '@shared/naming'
-import { materializeTranscript, toParagraphs } from '@shared/transcript'
+import { readableParagraphs } from '@shared/transcript'
 
 function formatDate(iso: string): string {
   const date = new Date(iso)
@@ -8,9 +8,12 @@ function formatDate(iso: string): string {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
-/** Markdown export, generated from transcript.json and nothing else. */
-export function transcriptToMarkdown(transcript: TranscriptFile, options: ExportOptions): string {
-  const source = options.applyAcceptedSuggestions ? materializeTranscript(transcript) : transcript
+/** Markdown export, generated from transcript.json (and the lecture's bookmarks) and nothing else. */
+export function transcriptToMarkdown(
+  transcript: TranscriptFile,
+  options: ExportOptions,
+  extras: ExportExtras = {}
+): string {
   const lines: string[] = []
 
   lines.push(`# ${transcript.lectureTitle}`)
@@ -38,11 +41,21 @@ export function transcriptToMarkdown(transcript: TranscriptFile, options: Export
     lines.push(`> ${pending} glossary suggestion(s) are still awaiting review in the app.`)
   }
 
+  const bookmarks = options.includeBookmarks ? [...(extras.bookmarks ?? [])].sort((a, b) => a.atSec - b.atSec) : []
+  if (bookmarks.length > 0) {
+    lines.push('')
+    lines.push('## Bookmarks')
+    lines.push('')
+    for (const bookmark of bookmarks) {
+      lines.push(`- \`${formatClock(bookmark.atSec)}\` ${bookmark.note.trim() || '_Bookmarked moment_'}`)
+    }
+  }
+
   lines.push('')
   lines.push('---')
   lines.push('')
 
-  for (const p of toParagraphs(source.segments, options.paragraphSeconds)) {
+  for (const p of readableParagraphs(transcript, options)) {
     const prefix: string[] = []
     if (options.includeTimestamps) prefix.push(`\`[${formatClock(p.start)}]\``)
     if (p.speaker) prefix.push(`**${p.speaker}:**`)
