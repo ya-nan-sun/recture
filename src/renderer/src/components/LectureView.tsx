@@ -49,13 +49,27 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
     void load()
   }, [load])
 
+  // Hold the latest callback without making the effect depend on its identity.
+  // The parent passes a fresh function on every render; depending on it caused
+  // a render loop that flickered the view between the transcript and
+  // a loading screen for as long as the lecture stayed open.
+  const onChangedRef = useRef(onChanged)
+  onChangedRef.current = onChanged
+
+  // Progress stays latched at `done`/`failed` after a pass finishes, so react to
+  // each completion *event* exactly once. Anything that finished before this
+  // view mounted is already covered by the initial load.
+  const handledProgressRef = useRef(progress)
+
   // Reload when the pipeline finishes for this lecture.
   useEffect(() => {
-    if (progress?.lectureId === lecture.id && (progress.phase === 'done' || progress.phase === 'failed')) {
-      void load()
-      onChanged()
-    }
-  }, [progress, lecture.id, load, onChanged])
+    if (!progress || progress === handledProgressRef.current) return
+    if (progress.lectureId !== lecture.id) return
+    if (progress.phase !== 'done' && progress.phase !== 'failed') return
+    handledProgressRef.current = progress
+    void load()
+    onChangedRef.current()
+  }, [progress, lecture.id, load])
 
   const paragraphs = useMemo(() => {
     if (!transcript) return []
@@ -264,7 +278,7 @@ export function LectureView({ lecture, classes, progress, onToast, onChanged, on
       )}
 
       <h2>Transcript</h2>
-      {loading ? (
+      {loading && !transcript ? (
         <Empty title="Loading…" />
       ) : !transcript ? (
         <Empty

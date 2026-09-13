@@ -44,6 +44,12 @@ export default function App(): ReactNode {
     return nextClasses
   }, [])
 
+  // Stable identity on purpose: LectureView reacts to transcription finishing,
+  // and an inline arrow here gave it a new callback on every render.
+  const handleLectureChanged = useCallback(() => {
+    void refresh()
+  }, [refresh])
+
   useEffect(() => {
     void refresh().then((nextClasses) => {
       // Land somewhere useful: the first class, or settings on a fresh install.
@@ -330,7 +336,7 @@ export default function App(): ReactNode {
               classes={classes}
               progress={recording.progress}
               onToast={notify}
-              onChanged={() => void refresh()}
+              onChanged={handleLectureChanged}
               onRemoved={() => {
                 const parent = classes.find((c) => c.id === activeLecture.classId)
                 void refresh()
