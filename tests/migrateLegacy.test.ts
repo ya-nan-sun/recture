@@ -37,10 +37,32 @@ describe('migrateLegacyUserData', () => {
     // WAL must travel with the database or committed pages are lost.
     expect(fs.existsSync(path.join(target, 'recture.db-wal'))).toBe(true)
 
-    // The saved API key must survive byte-for-byte.
-    expect(fs.readFileSync(path.join(target, 'secrets.bin'))).toEqual(Buffer.from([1, 2, 3, 4]))
-    // And the library location the student chose.
+    // The library location the student chose must survive.
     expect(JSON.parse(fs.readFileSync(path.join(target, 'settings.json'), 'utf8')).rootDir).toBe('D:/MyLectures')
+  })
+
+  it('does not copy secrets.bin, and says the key must be re-entered', () => {
+    // On Windows safeStorage encrypts with a key held in Chromium's Local State
+    // inside userData. Copying the blob without that key produces a file that
+    // can never be decrypted, which is worse than an obviously missing one.
+    seedLegacy()
+    const target = path.join(root, 'Recture')
+
+    const result = migrateLegacyUserData(target)
+
+    expect(fs.existsSync(path.join(target, 'secrets.bin'))).toBe(false)
+    expect(result.apiKeyNeedsReentry).toBe(true)
+  })
+
+  it('does not flag re-entry when the old install had no key', () => {
+    const dir = path.join(root, 'lecturerec')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'settings.json'), '{}')
+
+    const result = migrateLegacyUserData(path.join(root, 'Recture'))
+
+    expect(result.migrated).toBe(true)
+    expect(result.apiKeyNeedsReentry).toBe(false)
   })
 
   it('leaves the legacy folder untouched', () => {

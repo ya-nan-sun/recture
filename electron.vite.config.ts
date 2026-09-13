@@ -17,7 +17,8 @@ export default defineConfig({
           index: resolve('src/main/index.ts'),
           // Dev-only integration harness (`npm run smoke`). Excluded from
           // packaged builds via the electron-builder `files` globs.
-          devSmoke: resolve('src/main/devSmoke.ts')
+          devSmoke: resolve('src/main/devSmoke.ts'),
+          devDeepgram: resolve('src/main/devDeepgram.ts')
         }
       }
     }

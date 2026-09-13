@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "smoke": "electron-vite build && electron out/main/devSmoke.js",
     "postinstall": "electron-builder install-app-deps",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "check:deepgram": "electron-vite build && electron out/main/devDeepgram.js"
   },
   "dependencies": {
     "better-sqlite3": "12.11.1",
@@ -47,7 +48,8 @@
     },
     "files": [
       "out/**/*",
-      "!out/main/devSmoke.js"
+      "!out/main/devSmoke.js",
+      "!out/main/devDeepgram.js"
     ],
     "extraResources": [
       {

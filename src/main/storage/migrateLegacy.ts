@@ -24,6 +24,12 @@ export interface MigrationResult {
   migrated: boolean
   from: string | null
   files: string[]
+  /**
+   * True when the old install had a saved API key that cannot be carried over.
+   * The UI tells the student to re-enter it rather than leaving them wondering
+   * why the provider suddenly says it is not configured.
+   */
+  apiKeyNeedsReentry: boolean
 }
 
 function firstExisting(candidates: string[]): string | null {
@@ -42,7 +48,7 @@ function firstExisting(candidates: string[]): string | null {
  * folder, if the new one has not been set up yet.
  */
 export function migrateLegacyUserData(userDataDir: string): MigrationResult {
-  const result: MigrationResult = { migrated: false, from: null, files: [] }
+  const result: MigrationResult = { migrated: false, from: null, files: [], apiKeyNeedsReentry: false }
 
   // Already set up under the new name — never overwrite live data.
   const alreadyConfigured =
@@ -55,9 +61,14 @@ export function migrateLegacyUserData(userDataDir: string): MigrationResult {
 
   // `-wal` and `-shm` carry committed pages that may not be in the main file
   // yet, so the database is only consistent if all three travel together.
+  //
+  // `secrets.bin` is deliberately NOT copied. On Windows, safeStorage encrypts
+  // with a random key held in Chromium's own `Local State` inside userData, so
+  // the blob is meaningless without that file — copying it just produces a
+  // secrets file that can never be decrypted. Re-pasting an API key takes a
+  // moment; a silently unreadable one is worse than an obviously absent one.
   const copies: [string, string][] = [
     ['settings.json', 'settings.json'],
-    ['secrets.bin', 'secrets.bin'],
     ['lecturerec.db', 'recture.db'],
     ['lecturerec.db-wal', 'recture.db-wal'],
     ['lecturerec.db-shm', 'recture.db-shm']
@@ -79,6 +90,7 @@ export function migrateLegacyUserData(userDataDir: string): MigrationResult {
 
   result.migrated = result.files.length > 0
   result.from = result.migrated ? legacyDir : null
+  result.apiKeyNeedsReentry = result.migrated && fs.existsSync(path.join(legacyDir, 'secrets.bin'))
   return result
 }
 

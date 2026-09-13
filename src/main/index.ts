@@ -91,6 +91,9 @@ app.whenReady().then(async () => {
   if (migration.migrated) {
     console.log(`Migrated ${migration.files.length} file(s) from ${migration.from}`)
   }
+  if (migration.apiKeyNeedsReentry) {
+    console.log('A saved API key could not be carried over; the student must re-enter it.')
+  }
 
   const settings = new SettingsStore(userData)
   const db = openDatabase(userData)
